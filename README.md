@@ -195,7 +195,7 @@ Type_2  # Type of Type_1
 # typeAt n works for any n; Type_0 through Type_4 are convenience aliases.
 # 4 is arbitrary — for NixOS configuration you'll rarely need more than Type_1.
 
-(typeAt 0).check Int   # true — Int lives at universe 0
+(typeAt 0).check Int    # true — Int lives at universe 0
 level Int               # 0
 ```
 

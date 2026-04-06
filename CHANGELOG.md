@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-06
+
+### Changed
+
+- **Breaking:** `mk`-wrapped functions are now directly callable, removing the need for `.value` (@vic, #1)
+- Test extraction produces nested attrsets instead of flat dotted keys, enabling targeted `nix-unit` runs (@vic, #5)
+
+### Added
+
+- `CONTRIBUTING.md` explaining the josh mirror workflow
+- `shell.nix`, `Justfile`, `tests.nix` for non-flake dev workflow (@vic, #4)
+
+### Removed
+
+- Unused flake inputs (@vic, #3)
+
 ## [0.3.0] - 2026-02-27
 
 ### Added

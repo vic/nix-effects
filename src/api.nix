@@ -11,36 +11,32 @@ rec {
   mk = { doc ? "", value, tests ? {} }: {
     _type = "nix-effects-api";
     inherit doc value tests;
-  };
+  } // (lib.optionalAttrs (lib.isFunction value) { __functor = _self: value; });
 
   # Recursively extract raw values, stripping mk wrappers.
   extractValue = x:
-    if x ? _type && x._type == "nix-effects-api"
-    then extractValue x.value
+    if x ? value && x._type or null == "nix-effects-api" then extractValue x.value
     else if builtins.isAttrs x && !(x ? _tag)
     then builtins.mapAttrs (_: extractValue) x
     else x;
 
   # Recursively extract all inline tests from nested mk wrappers.
-  # Returns flat attrset: { "prefix.testName" = { expr; expected; }; ... }
-  extractTests = prefix: x:
+  extractTests = x:
     let
       ownTests =
         if x ? _type && x._type == "nix-effects-api" && x.tests != {}
         then lib.mapAttrs' (name: test: {
-          name = "${prefix}.${name}";
+          name = "test-${name}";
           value = test;
         }) x.tests
         else {};
       childTests =
-        if x ? _type && x._type == "nix-effects-api" && builtins.isAttrs x.value
-        then lib.foldl' (acc: key:
-          acc // extractTests "${prefix}.${key}" x.value.${key}
-        ) {} (builtins.attrNames x.value)
-        else if builtins.isAttrs x && !(x ? _type) && !(x ? _tag)
-        then lib.foldl' (acc: key:
-          acc // extractTests "${prefix}.${key}" x.${key}
-        ) {} (builtins.attrNames x)
+        let
+          isAPI = builtins.isAttrs (x.value or null) && x._type or null == "nix-effects-api";
+          isRaw = builtins.isAttrs x && !(x ? _type) && !(x ? _tag);
+        in
+        if isAPI then lib.mapAttrs (_: extractTests) x.value
+        else if isRaw then lib.mapAttrs (_: extractTests) x
         else {};
     in ownTests // childTests;
 
@@ -50,7 +46,7 @@ rec {
   # When a mk wrapper's value is itself an attrset of mk-wrapped functions (module pattern),
   # the inner docs are merged in alongside this node's own doc/tests.
   extractDocs = x:
-    if x ? _type && x._type == "nix-effects-api"
+    if x ? value && x._type or null == "nix-effects-api"
     then
       { inherit (x) doc tests; } //
       (if builtins.isAttrs x.value && !(x.value ? _tag)
