@@ -60,7 +60,7 @@ let
   # The public library interface
   fx = {
     # Core ADT (kernel)
-    inherit (kernel) pure impure send bind map seq;
+    inherit (kernel) pure impure send bind map seq pipe kleisli;
 
     # Queue (advanced — exposed for custom interpreters)
     inherit (kernel) queue;

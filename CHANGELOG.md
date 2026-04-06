@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `kernel.pipe`: chain a computation through Kleisli arrows, threading results via bind (closes #6)
+- `kernel.kleisli`: Kleisli composition `(a -> M b) -> (b -> M c) -> (a -> M c)`
+
 ## [0.4.0] - 2026-04-06
 
 ### Changed

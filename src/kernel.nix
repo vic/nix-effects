@@ -139,12 +139,77 @@ let
     };
   };
 
+  pipe = mk {
+    doc = "Chain a computation through a list of Kleisli arrows, threading results via bind.";
+    value = init: arrows:
+      builtins.foldl'
+        (acc: f: bind acc f)
+        init
+        arrows;
+    tests = {
+      "pipe-empty-returns-init" = {
+        expr = (pipe (pure 42) []).value;
+        expected = 42;
+      };
+      "pipe-single-arrow" = {
+        expr = (pipe (pure 21) [(x: pure (x * 2))]).value;
+        expected = 42;
+      };
+      "pipe-chains-results" = {
+        expr = (pipe (pure 1) [
+          (x: pure (x + 10))
+          (x: pure (x * 3))
+          (x: pure (x + 1))
+        ]).value;
+        expected = 34;  # (1 + 10) * 3 + 1
+      };
+      "pipe-threads-through-effects" = {
+        expr = (pipe (send "get" null) [(x: pure (x + 1))]).effect.name;
+        expected = "get";
+      };
+    };
+  };
+
+  kleisli = mk {
+    doc = "Kleisli composition: compose two Kleisli arrows (a -> M b) and (b -> M c) into (a -> M c).";
+    value = f: g: x: bind (f x) g;
+    tests = {
+      "kleisli-composes-pure" = {
+        expr = (kleisli (x: pure (x + 1)) (x: pure (x * 2)) 10).value;
+        expected = 22;  # (10 + 1) * 2
+      };
+      "kleisli-identity-left" = {
+        expr = (kleisli pure (x: pure (x * 3)) 7).value;
+        expected = 21;
+      };
+      "kleisli-identity-right" = {
+        expr = (kleisli (x: pure (x * 3)) pure 7).value;
+        expected = 21;
+      };
+      "kleisli-associative" = {
+        expr =
+          let
+            f = x: pure (x + 1);
+            g = x: pure (x * 2);
+            h = x: pure (x - 3);
+          in {
+            lhs = (kleisli (kleisli f g) h 5).value;
+            rhs = (kleisli f (kleisli g h) 5).value;
+          };
+        expected = {
+          lhs = 9;  # ((5 + 1) * 2) - 3
+          rhs = 9;
+        };
+      };
+    };
+  };
+
 in mk {
-  doc = "Freer monad kernel: Return/OpCall ADT with FTCQueue bind, send, map, seq.";
+  doc = "Freer monad kernel: Return/OpCall ADT with FTCQueue bind, send, map, seq, pipe, kleisli.";
   value = {
     inherit pure impure send bind;
     map = mapComp;
-    inherit seq;
+    inherit seq pipe kleisli;
     # Expose queue for advanced use (handler composition, adapt)
     inherit queue;
   };
