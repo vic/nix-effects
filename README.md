@@ -1,97 +1,81 @@
 # nix-effects
 
-A type-checking kernel, algebraic effects, and dependent types in pure Nix.
+A freer-monad effect layer for pure Nix, with a dependent type checker
+built on top of it.
 
-nix-effects catches configuration errors at `nix eval` time — before
-anything builds or ships. Every type is backed by an MLTT proof checker
-that verifies values, computes universe levels, and extracts certified
-Nix functions from proof terms. You get precise blame when something
-violates a type.
-
-```
-$ nix build .#insecure-public
-error: Proof rejected: service 'insecure-public' violates policy
-  (bind ∈ allowed ∧ protocol ∈ allowed ∧ public → https)
-```
-
-The service never builds. The MLTT kernel evaluated a cross-field
-invariant — public-facing services must use HTTPS — normalized the
-result to `false`, and rejected the `Refl` proof before the builder
-ran. No evaluator patches, no external tools. Pure Nix.
-
-## The demo
-
-This example is contrived — you could enforce the same policy with a few
-`assert` statements. The point is that the kernel normalizes and checks
-it as a proof obligation, not a runtime boolean. 
-
-Five string fields: bind address, port, protocol, log level, and name.
-The constraint is cross-field: if `bind` is `0.0.0.0` (public),
-`protocol` must be `https`. The kernel verifies this for each concrete
-config by checking `Refl : Eq(Bool, policy(cfg), true)`.
-
-Two tiers of verification work together:
+The effect layer is where the DX comes from. Validation is phrased as a
+`typeCheck` effect, and the same validator can run under different
+handlers that choose what happens on a failure. The handler is where
+the policy lives, not the validator.
 
 ```nix
-let
-  H = fx.types.hoas;
-  v = fx.types.verified;
-  inherit (fx.types) elaborateValue;
+# src/effects/typecheck.nix — three handlers for the same effect.
 
-  ServiceConfig = H.record [
-    { name = "bind";     type = H.string; }
-    { name = "logLevel"; type = H.string; }
-    { name = "name";     type = H.string; }
-    { name = "port";     type = H.string; }
-    { name = "protocol"; type = H.string; }
-  ];
+strict = {
+  typeCheck = { param, state }:
+    if param.type.check param.value
+    then { resume = true; inherit state; }
+    else builtins.throw
+      "Type error in ${param.context}: expected ${param.type.name}, got ${builtins.typeOf param.value}";
+};
 
-  # Tier 2 — verified computation: the kernel proves this function total,
-  # then extracts it as a plain Nix function. Public bind forces HTTPS.
-  effectiveProtocol = v.verify (H.forall "s" ServiceConfig (_: H.string))
-    (v.fn "s" ServiceConfig (s:
-      v.if_ H.string (v.strEq (v.field ServiceConfig "bind" s) (v.str "0.0.0.0")) {
-        then_ = v.str "https";
-        else_ = v.field ServiceConfig "protocol" s;
-      }));
+collecting = {
+  typeCheck = { param, state }:
+    if param.type.check param.value
+    then { resume = true; inherit state; }
+    else {
+      resume = false;
+      state = state ++ [{
+        context = param.context;
+        typeName = param.type.name;
+        actual = builtins.typeOf param.value;
+        message = "Expected ${param.type.name}, got ${builtins.typeOf param.value}";
+      }];
+    };
+};
 
-  # policyAnn — validates bind, protocol, port, logLevel ∈ allowed values
-  # plus the cross-field invariant: public bind → HTTPS (see full example)
-
-  # Tier 3 — proof-gated builder: encode config as a kernel term,
-  # apply the policy function, check Refl : Eq(Bool, result, true).
-  mkVerifiedService = cfg:
-    let
-      cfgHoas  = elaborateValue ServiceConfig cfg;
-      proofTy  = H.eq H.bool (H.app policyAnn cfgHoas) H.true_;
-      checked  = H.checkHoas proofTy H.refl;
-      protocol = effectiveProtocol cfg;
-    in if checked ? error
-      then throw "Proof rejected: service '${cfg.name}' violates policy"
-      else pkgs.writeShellScriptBin cfg.name ''
-        echo "${cfg.name} on ${protocol}://${cfg.bind}:${cfg.port}"
-      '';
-in {
-  # Builds — localhost HTTP on port 8080 satisfies all policy constraints
-  api-server = mkVerifiedService {
-    name = "api-server"; bind = "127.0.0.1";
-    port = "8080"; protocol = "http"; logLevel = "info";
-  };
-  # Fails at eval — public bind with HTTP violates the invariant
-  insecure-public = mkVerifiedService {
-    name = "insecure-public"; bind = "0.0.0.0";
-    port = "80"; protocol = "http"; logLevel = "debug";
-  };
-}
+logging = {
+  typeCheck = { param, state }:
+    let passed = param.type.check param.value;
+    in { resume = passed;
+         state = state ++ [{
+           context = param.context;
+           typeName = param.type.name;
+           inherit passed;
+         }]; };
+};
 ```
 
-`nix build .#api-server` succeeds — the kernel normalizes `policy(cfg)` to
-`true` and accepts `Refl`. `nix build .#insecure-public` fails at eval —
-the policy normalizes to `false`, and `Refl : Eq(Bool, false, true)` is
-unprovable. The service is never built. See
-[examples/typed-derivation.nix](examples/typed-derivation.nix) for the
-complete example with the full policy function, string membership
-validation, and both derivations.
+A validator that walks a nested record and sends a `typeCheck` effect at
+every leaf runs unchanged under all three. Under `strict` it aborts at
+the first bad field. Under `collecting` it visits every leaf and returns
+a list of failures with their contexts. Under `logging` it records every
+check the validator ever made, pass or fail, which is useful when you
+are debugging a validator that rejects a value you thought it should
+accept.
+
+The `context` field is the field path into the value. When a
+validator walking a deeply nested record reports a failure, the
+context is where the path comes from.
+
+On top of the effect layer sits a Martin-Löf dependent type checker in
+`src/tc/` with Pi, Sigma, identity types with J, cumulative universes,
+HOAS elaboration, and verified extraction of plain Nix functions from
+proof terms. The kernel itself is pure functions over values, no
+`fx.*` calls, independent of the effect layer. The effect layer is
+what surfaces kernel errors to users. The bidirectional checker sends
+`typeCheck` effects carrying the same `context` field shown above, so
+type errors in deeply nested terms come back localized to the field
+that broke.
+
+Underneath the effect layer sits a trampoline built on
+`builtins.genericClosure` with `deepSeq` applied to the key function.
+Nix caps its call stack at 10,000 frames, and the trampoline is how
+deep recursion happens in the effect layer's interpreter loop and in
+the kernel without touching that stack. See
+[`book/src/trampoline.md`](book/src/trampoline.md).
+
+Everything runs at `nix eval` time, before anything builds or ships.
 
 **[Documentation](https://docs.kleisli.io/nix-effects)**
 
@@ -452,15 +436,6 @@ Key papers that shaped the design:
   Graded Modal Types*. The graded linear type model. nix-effects' `Linear`,
   `Affine`, and `Graded` types implement resource-usage tracking following
   this quantitative framework.
-
-- **Pédrot & Tabareau (2020)** *The Fire Triangle*. Their no-go theorem
-  proves that substitution, dependent elimination, and observable effects
-  can't coexist in a consistent type theory. Nix eval is pure — no
-  observable effects in their sense — so the theorem doesn't directly
-  apply. But it validates the design: keeping types as pure values means
-  dependent contracts like DepRecord avoid the coherence problems the
-  theorem identifies. See the [theory chapter](https://docs.kleisli.io/nix-effects/theory.html)
-  for the full argument.
 
 ## Acknowledgments
 

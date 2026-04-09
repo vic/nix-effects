@@ -129,9 +129,10 @@ let
   # EFFECTFUL TYPE CHECKING TESTS
   # ===========================================================================
   #
-  # These demonstrate the core innovation: type checking IS an algebraic effect.
-  # Same computation, different handler, different behavior.
-  # Per Pedrot & Tabareau "Fire Triangle" (POPL 2020).
+  # These demonstrate type checking as an algebraic effect. Same
+  # computation, different handler, different behavior. Handler pattern
+  # follows Plotkin & Pretnar (2009); freer-monad encoding is Kiselyov
+  # & Ishii (2015).
 
   # -- Test 11: Pi.checkAt returns Computation with typeCheck effect --
   piCheckAtIsEffectful =

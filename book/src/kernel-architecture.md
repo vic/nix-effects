@@ -678,15 +678,10 @@ in {
 ```
 
 **Cost:** High — write the implementation in HOAS. Best reserved for
-security-critical code (firewall rules, certificate validation,
-cross-field invariants) where the cost is justified by the assurance.
-The `typed-derivation.nix` example illustrates the pattern with a
-service builder where the kernel rejects invalid configurations via a
-machine-checked proof before any derivation is attempted. (The example
-itself is contrived — `assert` could do the same job. The interesting
-direction is dependent module types where `assert` can't.) See the
+code where the cost is justified by the assurance. See the
 [Proof Guide](proof-guide.md) for a progressive tutorial from simple
-proofs through verified extraction to proof-gated derivations.
+proofs through the J eliminator to verified extraction of plain Nix
+functions.
 
 ## How mkType derives .check
 

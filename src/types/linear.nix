@@ -45,7 +45,6 @@
 # References:
 #   Orchard et al. (2019) "Quantitative Program Reasoning with Graded Modal Types"
 #   Mesquita & Toninho (2026) "Lazy Linearity" (POPL 2026)
-#   Pedrot & Tabareau (2020) "Fire Triangle" — types/checking/policy separation
 { fx, api, ... }:
 
 let
@@ -413,8 +412,7 @@ in mk {
     Affine(T)       — at most one consume (release allowed)
     Graded(n, T)    — exactly n consumes (generalizes Linear/Affine)
 
-    See Orchard et al. (2019) for graded modal types and
-    Pedrot & Tabareau (2020) "Fire Triangle" for the types/effects split.
+    See Orchard et al. (2019) for graded modal types.
   '';
   value = {
     inherit Linear Affine Graded;

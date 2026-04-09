@@ -11,8 +11,10 @@
 # Three standard strategies, following the algebraic effects paradigm:
 # same computation, different handler, different behavior.
 #
-# Fire Triangle (Pedrot & Tabareau 2020): types are pure values,
-# type checking is effectful computation. The handler IS the algebra.
+# Handler pattern follows Plotkin & Pretnar (2009) "Handlers of Algebraic
+# Effects"; the freer-monad encoding is Kiselyov & Ishii (2015) "Freer
+# Monads, More Extensible Effects". Types stay pure values and type
+# checking is effectful computation, so the handler is the algebra.
 { api, ... }:
 
 let

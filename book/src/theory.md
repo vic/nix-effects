@@ -157,56 +157,27 @@ negate pred            # negation
 
 ```
 
-## The Fire Triangle and Nix's purity boundary
+## Soundness and what Nix provides
 
-Pédrot & Tabareau (2020) proved a no-go result they call the Fire
-Triangle: a type theory with substitution, dependent elimination, and
-*observable effects* is inconsistent. Pick any two.
+The kernel's soundness is standard MLTT metatheory. Martin-Löf (1984)
+set out the rules, and the Mini-TT lineage (Coquand et al. 2009, Kovács
+2022, and the elaboration-zoo and pi-forall tutorials) gives the
+bidirectional elaboration and normalization-by-evaluation recipe the
+kernel follows. Nothing in the kernel is novel on the metatheory side,
+and none of the soundness argument routes through anything Nix-specific.
 
-"Observable effects" means something specific in the paper: a closed
-boolean term that isn't observationally equivalent to `true` or `false`.
-Think `callcc`-based backtracking, where a boolean changes value depending
-on the continuation — it's not stably either value. Printing, exceptions,
-non-termination — none of them count. The paper is explicit: the effect
-has to be detectable through the type system's notion of definitional
-equality.
+What Nix contributes is a faithful runtime for definitional equality.
+NbE requires that reducing open terms is deterministic and side effect
+free, and pure Nix evaluation gives you exactly that. `builtins.trace`
+and `builtins.throw` are not observable through definitional equality,
+so they cannot perturb conversion checking.
 
-Nix at eval time has none of this. Pure, lazy, deterministic.
-`builtins.trace` is printing. `builtins.throw` is an exception. No
-`callcc`, no mutable state, no first-class continuations. Every boolean
-evaluates to `true`, `false`, or diverges. The Fire Triangle can't fire.
-
-And nix-effects operates entirely in this pure eval-time world. The freer
-monad is a data structure — `Impure` and `Pure` attrsets sitting in
-memory — not an operational effect. Handlers walk the tree with pure
-functions. The "effects" are simulated: a design pattern for structuring
-validation, not a language feature.
-
-The real effect boundary in Nix falls between `nix eval` (pure evaluation)
-and `nix build` (sandboxed side effects — running build scripts, writing
-to the store). nix-effects catches configuration errors on the pure side
-of that boundary. `nix build .#buggyService` fails at eval time. No
-sandbox spins up. No build script runs.
-
-So why bring up the Fire Triangle at all? Because it validates the
-architecture. If types were themselves effectful — if constructing a
-`DepRecord` could trigger effects — dependent types would hit the coherence
-problems the theorem describes. Evaluating a dependent type might trigger
-effects, and you'd need to synchronize those effects between term and type,
-which is exactly what the paper's ∂CBPV `dlet` binder addresses. By
-keeping types as pure values, nix-effects sidesteps the problem entirely.
-The three-level separation (pure types / effectful validation / handler
-interpretation) comes from the handler pattern (Plotkin & Pretnar) and
-the contract pattern (Findler & Felleisen), but the Fire Triangle is why
-keeping Level 1 pure matters when you have dependent types.
-
-The kernel makes this concrete. It implements a cumulative universe
-hierarchy (`U(0) : U(1) : U(2) : ...`) where `checkTypeLevel` computes
-levels from the typing derivation — `level(Pi(A, B)) = max(level(A),
-level(B))`, `level(U(i)) = i + 1`. Girard's paradox can't happen:
-`U(i) : U(i)` is rejected because `level(U(i)) = i + 1 > i`. The kernel
-checks this for every type, so universe stratification is an enforced
-invariant — not a convention you hope people follow.
+The effect layer sits above the kernel as meta-level freer monad data.
+`Impure` and `Pure` attrsets are values walked by pure handlers. They
+are not object-language effects in the kernel's grammar, and the kernel
+has no constructor for them. This is how the effect layer can surface
+kernel errors as `typeCheck` effects carrying context paths without
+widening the trusted core.
 
 ## Graded linear types
 
@@ -264,17 +235,13 @@ how to report.
 5. Findler, R., & Felleisen, M. (2002). *Contracts for Higher-Order Functions*.
    ICFP 2002. [[doi](https://doi.org/10.1145/581478.581484)]
 
-6. Pédrot, P., & Tabareau, N. (2020). *The Fire Triangle: How to Mix
-   Substitution, Dependent Elimination, and Effects*.
-   POPL 2020. [[doi](https://doi.org/10.1145/3371126)]
-
-7. Van Horn, D., & Might, M. (2010). *Abstracting Abstract Machines*.
+6. Van Horn, D., & Might, M. (2010). *Abstracting Abstract Machines*.
    ICFP 2010. (See [Trampoline](trampoline.md))
 
-8. Freeman, T., & Pfenning, F. (1991). *Refinement Types for ML*.
+7. Freeman, T., & Pfenning, F. (1991). *Refinement Types for ML*.
    PLDI 1991. [[doi](https://doi.org/10.1145/113445.113468)]
 
-9. Orchard, D., Liepelt, V., & Eades, H. (2019). *Quantitative Program
+8. Orchard, D., Liepelt, V., & Eades, H. (2019). *Quantitative Program
    Reasoning with Graded Modal Types*. ICFP 2019.
    [[doi](https://doi.org/10.1145/3341714)]
 

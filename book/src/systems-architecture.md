@@ -504,32 +504,24 @@ in
 
 ```
 
-## The self-reference boundary
+## Why the kernel cannot reason about its own types
 
-The kernel is an effectful computation built on nix-effects. It reasons
-about freer monad trees by structural induction. The freer monad trees
-include the kernel's own computation.
+Girard (1972) showed that a type theory with `Type : Type` is
+inconsistent, and Hurkens (1995) gave a compact MLTT rendering of the
+same paradox. The standard fix is a strict universe hierarchy, and the
+kernel enforces it by computing `level(U(i)) = i + 1` from the typing
+derivation rather than trusting a declared level.
 
-This is where the Fire Triangle becomes load-bearing. Pedrot & Tabareau
-(2020) proved that substitution, dependent elimination, and observable
-effects can't coexist in a consistent type theory. In our system:
+Concretely, the kernel at universe level N reasons about computations
+at levels 0 through N-1, and its own checker effects live at level N.
+A proof term that tried to reference the kernel's own universe would
+force the level solver into a cycle where `?u` depends on `?u`, which
+the constraint solver detects and rejects.
 
-- The kernel at universe level N reasons about computations at
-  levels 0 through N-1.
-- The kernel's own effects live at level N.
-- If a proof term references the kernel's own universe, the
-  constraint solver hits a cycle: level ?u depends on level ?u.
-  Unsatisfiable. Rejected.
-
-The Fire Triangle doesn't say "don't do this." It says "the levels must
-be strict." The universe stream can go as high as needed, but it can't
-loop back. The constraint solver enforces this — not by advisory
-convention, but by detecting cycles in level dependencies.
-
-This is the point where universe levels stop being trusted declarations
-and become computed, verified properties. The kernel infers them, the
-constraint solver checks them, and the Fire Triangle tells us why
-skipping this check would be unsound.
+Universe stratification is therefore a computed, verified property
+rather than a trusted declaration. The kernel infers levels, the solver
+checks them, and Girard's paradox cannot be constructed because no term
+can be placed at a level that contains itself.
 
 ## The infrastructure reuse
 
@@ -669,8 +661,11 @@ The following features remain unimplemented:
 
 - Dunfield, J., & Krishnaswami, N. (2021). *Bidirectional Typing*.
   ACM Computing Surveys.
-- Pedrot, P., & Tabareau, N. (2020). *The Fire Triangle*.
-  POPL 2020.
+- Girard, J.-Y. (1972). *Interprétation fonctionnelle et élimination
+  des coupures de l'arithmétique d'ordre supérieur*. Thèse d'État,
+  Université Paris 7.
+- Hurkens, A. J. C. (1995). *A Simplification of Girard's Paradox*.
+  TLCA 1995.
 - Kiselyov, O., & Ishii, H. (2015). *Freer Monads, More Extensible
   Effects*. Haskell Symposium 2015.
 - Plotkin, G., & Pretnar, M. (2009). *Handlers of Algebraic Effects*.

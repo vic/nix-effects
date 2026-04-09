@@ -1310,10 +1310,10 @@ The kernel MUST reject `U(i) : U(i)`. This is guaranteed by the
 level computation: `level(U(i)) = i + 1`, so `U(i)` lives at level
 `i + 1`, not `i`. Self-containing universes cannot be constructed.
 
-This prevents Girard's paradox, which requires a type that contains
-itself. The Fire Triangle (Pedrot & Tabareau 2020) proves that
-without universe stratification, dependent elimination and
-substitution together yield inconsistency.
+This prevents Girard's paradox (Girard 1972), which requires a type
+that contains itself. Hurkens (1995) gives the compact MLTT rendering
+of the inconsistency proof. Universe stratification is the standard
+fix, and it is why the kernel enforces `level(U(i)) = i + 1`.
 
 ---
 
@@ -1744,7 +1744,8 @@ was incorrectly flagged in an earlier audit.
 2. Dunfield, J. & Krishnaswami, N. (2021). *Bidirectional Typing.* ACM Computing Surveys.
 3. Kovács, A. (2022). *Generalized Universe Hierarchies.* CSL 2022.
 4. Abel, A. & Chapman, J. (2014). *Normalization by Evaluation in the Delay Monad.*
-5. Pedrot, P. & Tabareau, N. (2020). *The Fire Triangle.* POPL 2020.
-6. de Bruijn, N. (1972). *Lambda Calculus Notation with Nameless Dummies.*
-7. Martin-Löf, P. (1984). *Intuitionistic Type Theory.* Bibliopolis.
-8. Felicissimo, T. (2023). *Generic Bidirectional Typing for Dependent Type Theories.*
+5. Girard, J.-Y. (1972). *Interprétation fonctionnelle et élimination des coupures de l'arithmétique d'ordre supérieur.* Thèse d'État, Université Paris 7.
+6. Hurkens, A. J. C. (1995). *A Simplification of Girard's Paradox.* TLCA 1995.
+7. de Bruijn, N. (1972). *Lambda Calculus Notation with Nameless Dummies.*
+8. Martin-Löf, P. (1984). *Intuitionistic Type Theory.* Bibliopolis.
+9. Felicissimo, T. (2023). *Generic Bidirectional Typing for Dependent Type Theories.*

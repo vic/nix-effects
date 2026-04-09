@@ -9,11 +9,22 @@ validates individual fields, not relationships between them. "The build
 system must appear in the declared platforms list" is a constraint no
 existing Nix tool can express as a type.
 
-nix-effects is a type-checking kernel, an algebraic effect system, and
-a dependent type library, implemented entirely in pure Nix. It catches
-configuration errors at `nix eval` time — before anything builds or
-ships. The kernel can verify that a validator function is correct,
-then extract it as an ordinary Nix function you call on plain attrsets.
+nix-effects is a freer-monad effect layer for pure Nix, with a
+dependent type checker built on top of it. The effect layer is where
+the DX comes from. Validation is phrased as a `typeCheck` effect, and
+the same validator can run under different handlers that choose what
+happens on a failure. The handler is where the policy lives, not the
+validator. Everything runs at `nix eval` time, before anything builds
+or ships.
+
+On top of the effect layer sits a Martin-Löf dependent type checker in
+`src/tc/` with Pi, Sigma, identity types with J, cumulative universes,
+HOAS elaboration, and verified extraction of plain Nix functions from
+proof terms. The kernel itself is pure functions over values,
+independent of the effect layer; the effect layer is what surfaces
+kernel errors to users. The bidirectional checker sends `typeCheck`
+effects carrying a field-path context, so type errors in deeply nested
+terms come back localized to the field that broke.
 
 ## What it looks like
 
@@ -219,12 +230,14 @@ The rest of the guide builds up from here:
 
 - **[Getting Started](getting-started.md)** walks through installation,
   your first type, your first effect, and the end-to-end derivation demo.
-- **[Proof Guide](proof-guide.md)** builds proofs incrementally — from
-  computational equality through the J eliminator to proof-gated
-  derivations that reject invalid configurations at eval time.
-- **[Theory](theory.md)** covers the nine papers that shaped the
-  design — algebraic effects, freer monads, dependent types, refinement
-  types, the Fire Triangle, and why they fit together in pure Nix.
+- **[Proof Guide](proof-guide.md)** builds proofs incrementally, from
+  computational equality through the J eliminator to verified
+  extraction of plain Nix functions from kernel-checked HOAS terms.
+- **[Theory](theory.md)** covers the papers that shaped the design,
+  algebraic effects and freer monads, FTCQueue for O(1) bind, dependent
+  type theory in the Martin-Löf and Mini-TT lineage, the handler
+  pattern, and refinement and graded types, and how they compose as a
+  practical engineering layer with a dependent type checker on top.
 - **[Trampoline](trampoline.md)** explains how `builtins.genericClosure`
   becomes a trampoline for stack-safe evaluation at scale.
 - **[Systems Architecture](systems-architecture.md)** describes the

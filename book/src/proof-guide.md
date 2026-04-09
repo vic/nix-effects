@@ -9,9 +9,9 @@ concrete data, checked by a type-theoretic kernel implemented in 1,300
 lines of pure Nix.
 
 This chapter builds proofs incrementally, from `0 + 0 = 0` through
-the J eliminator to a production service builder where invalid
-configurations are rejected by a machine-checked proof. Every example
-is runnable. The code comes from three files in the repository:
+the J eliminator to verified extraction of plain Nix functions from
+kernel-checked HOAS terms. Every example is runnable. The code comes
+from three files in the repository:
 [`proof-basics.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/proof-basics.nix),
 [`equality-proofs.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/equality-proofs.nix), and
 [`verified-functions.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/verified-functions.nix).
@@ -523,94 +523,6 @@ the field's position in the Sigma chain. `v.strEq` reduces in the
 kernel via the `StrEq` primitive — it compares string literals during
 normalization, producing `true` or `false` as kernel values.
 
-## Proof-gated derivations
-
-The examples so far verify individual functions or prove individual
-equalities. The
-[`typed-derivation.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/typed-derivation.nix)
-example combines them into a proof-gated service builder. To be clear:
-this example is contrived. You could enforce the same policy with a few
-`assert` statements. The point is that the kernel normalizes and checks
-it as a proof obligation rather than a runtime boolean. The interesting
-direction is dependent NixOS module types where the type of one option
-depends on the value of another; that isn't working yet.
-
-The architecture has three layers:
-
-**Tier 2 — Verified computation.** The kernel computes the effective
-protocol. Public-facing services (`bind = "0.0.0.0"`) are forced to
-HTTPS regardless of what the config says. The extracted function always
-returns the correct protocol because the kernel proved it total.
-
-```nix
-effectiveProtocol = v.verify (H.forall "s" ServiceConfig (_: H.string))
-  (v.fn "s" ServiceConfig (s:
-    v.if_ H.string (v.strEq (v.field ServiceConfig "bind" s)
-                             (v.str "0.0.0.0")) {
-      then_ = v.str "https";
-      else_ = v.field ServiceConfig "protocol" s;
-    }));
-```
-
-**Tier 3 — Machine-checked proof.** A policy function checks five
-constraints: bind address, protocol, log level, and port in allowed
-sets, plus the cross-field invariant (public bind requires HTTPS). For
-each concrete config, the builder:
-
-1. Encodes the Nix attrset as a kernel record (`elaborateValue`)
-2. Applies the policy function to it
-3. Normalizes the result via NbE
-4. Checks `Refl : Eq(Bool, result, true)`
-
-If the policy evaluates to `true`, `Refl` witnesses `true = true` and
-the service builds. If it evaluates to `false`, the kernel rejects
-`Refl : Eq(Bool, false, true)` and the build aborts at eval time.
-
-```nix
-mkVerifiedService = cfg: let
-  cfgHoas  = elaborateValue ServiceConfig cfg;
-  applied  = H.app policyAnn cfgHoas;
-  proofTy  = H.eq H.bool applied H.true_;
-  checked  = H.checkHoas proofTy H.refl;
-  protocol = effectiveProtocol cfg;
-in if checked ? error
-  then throw "Proof rejected: ..."
-  else pkgs.writeShellScriptBin cfg.name ''
-    echo "${cfg.name} listening on ${protocol}://${cfg.bind}:${cfg.port}"
-    ...
-  '';
-```
-
-The localhost HTTP server passes — all policy constraints hold, the
-kernel accepts the proof, and `nix build` produces a runnable binary:
-
-```nix
-api-server = mkVerifiedService {
-  name = "api-server"; bind = "127.0.0.1";
-  port = "8080"; protocol = "http"; logLevel = "info";
-};
-```
-
-The public HTTP server is rejected — `bind = "0.0.0.0"` with
-`protocol = "http"` violates the cross-field invariant. The kernel
-normalizes `policy(cfg)` to `false`, and `Refl : Eq(Bool, false, true)`
-is ill-typed:
-
-```nix
-insecure-public = mkVerifiedService {
-  name = "insecure-public"; bind = "0.0.0.0";
-  port = "80"; protocol = "http"; logLevel = "debug";
-};
-# error: Proof rejected: service 'insecure-public' violates policy
-```
-
-This is a genuine machine-checked proof, not a runtime assertion. The
-kernel's type checker — the same one that verifies `3 + 5 = 8` — does
-the work. The proof obligation `Eq(Bool, policy(cfg), true)` is checked
-by the same bidirectional algorithm that handles Pi types, Sigma types,
-and J elimination. The only difference is that the "theorem" here is
-about a service config rather than a natural number.
-
 ## What the kernel can and cannot prove
 
 The nix-effects kernel implements Martin-Löf type theory with universes,
@@ -629,7 +541,6 @@ normal forms.
   type-check with abstract variables
 - Verified function extraction: any function expressible with the
   kernel's eliminators can be verified and extracted
-- Cross-field invariants: "if bind is public, protocol must be HTTPS"
 
 **It cannot prove:**
 
@@ -679,7 +590,6 @@ that matters.
 | Transport | `Eq(A,x,y) → P(x) → P(y)` | `J(A, x, λy'.λ_. P(y'), px, y, p)` |
 | Ex falso | `Void → A` | `absurd(A, x)` |
 | Verified function | `v.verify type impl` | Extracted Nix function |
-| Proof-gated build | `Eq(Bool, policy(cfg), true)` | `Refl` (kernel normalizes policy) |
 
 ## References
 
