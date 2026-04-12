@@ -60,8 +60,16 @@ let
   # The public library interface
   fx = {
     # Core ADT
-    inherit (kernel) pure impure send bind map seq pipe kleisli;
+    inherit (kernel) pure impure send map seq pipe kleisli;
     inherit (src.comp) isPure match;
+
+    # Bind combinators
+    bind = {
+      __functor = _: kernel.bind;
+      attrs = kernel.bindAttrs;
+      fx = kernel.bindFx;
+      fn = kernel.bindFn;
+    };
 
     # Queue (advanced — exposed for custom interpreters)
     inherit (kernel) queue;
