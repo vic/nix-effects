@@ -20,8 +20,8 @@ let
     value = item: send "emit" item;
     tests = {
       "emit-is-impure" = {
-        expr = (emit 42)._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (emit 42);
+        expected = false;
       };
       "emit-effect-name" = {
         expr = (emit 42).effect.name;
@@ -41,8 +41,8 @@ let
     value = items: send "emitAll" items;
     tests = {
       "emitAll-is-impure" = {
-        expr = (emitAll [ 1 2 ])._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (emitAll [ 1 2 ]);
+        expected = false;
       };
     };
   };
@@ -58,8 +58,8 @@ let
     value = send "collect" null;
     tests = {
       "collect-is-impure" = {
-        expr = collect.value._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure collect.value;
+        expected = false;
       };
     };
   };

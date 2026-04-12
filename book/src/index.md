@@ -1,7 +1,5 @@
 # nix-effects
 
-A freer-monad effect layer for pure Nix, with a dependent type checker built on top of it.
-
 nix-effects provides composable, handler-driven effects via a freer monad with O(1) bind, a dependent type checker grounded in MLTT, and stack-safe evaluation via trampolining — all implemented entirely in pure Nix.
 
 ## Guide

@@ -27,8 +27,8 @@ let
     value = send "get" null;
     tests = {
       "get-is-impure" = {
-        expr = get.value._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure get.value;
+        expected = false;
       };
       "get-effect-name" = {
         expr = get.value.effect.name;
@@ -49,8 +49,8 @@ let
     value = s: send "put" s;
     tests = {
       "put-is-impure" = {
-        expr = (put 42)._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (put 42);
+        expected = false;
       };
       "put-carries-value" = {
         expr = (put 42).effect.param;
@@ -71,8 +71,8 @@ let
     value = f: send "modify" f;
     tests = {
       "modify-is-impure" = {
-        expr = (modify (x: x + 1))._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (modify (x: x + 1));
+        expected = false;
       };
     };
   };
@@ -88,8 +88,8 @@ let
     value = f: bind (send "get" null) (s: pure (f s));
     tests = {
       "gets-is-impure" = {
-        expr = (gets (s: s.x))._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (gets (s: s.x));
+        expected = false;
       };
     };
   };

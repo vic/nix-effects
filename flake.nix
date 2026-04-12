@@ -26,6 +26,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = nixpkgs.lib;
+          bench = import ./bench { inherit lib pkgs; };
           # Per-module API markdown generated from extractDocs mk wrappers.
           apiDocsSrc = import ./book/gen { inherit pkgs lib nix-effects; };
         in {
@@ -37,7 +38,22 @@
           kleisli-docs-content = import ./book/gen/kleisli-docs.nix {
             inherit pkgs lib nix-effects;
           };
+
+          # Benchmark runner and comparison tool
+          bench = bench.run;
+          bench-compare = bench.compare;
         });
+
+      apps = forAllSystems (system: {
+        bench = {
+          type = "app";
+          program = "${self.packages.${system}.bench}/bin/nix-effects-bench";
+        };
+        bench-compare = {
+          type = "app";
+          program = "${self.packages.${system}.bench-compare}/bin/nix-effects-bench-compare";
+        };
+      });
 
       checks = forAllSystems (system:
         let

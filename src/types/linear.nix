@@ -164,8 +164,8 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             LIntT = Linear IntT;
-          in (LIntT.validate { _linear = true; id = 0; resource = 42; })._tag;
-        expected = "Impure";
+          in fx.comp.isPure (LIntT.validate { _linear = true; id = 0; resource = 42; });
+        expected = false;
       };
       # Adequacy invariant: check ⟺ all-pass handler state
       "linear-adequacy-valid" = {

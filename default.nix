@@ -3,7 +3,7 @@
 # Usage:
 #   let fx = import ./. { lib = nixpkgs.lib; };
 #   in fx.run (fx.send "get" null) { get = ...; } initialState
-{ lib, ... }:
+{ lib, pkgs ? null, ... }:
 
 let
   api = import ./src/api.nix { inherit lib; };
@@ -59,8 +59,9 @@ let
 
   # The public library interface
   fx = {
-    # Core ADT (kernel)
+    # Core ADT
     inherit (kernel) pure impure send bind map seq pipe kleisli;
+    inherit (src.comp) isPure match;
 
     # Queue (advanced — exposed for custom interpreters)
     inherit (kernel) queue;
@@ -179,8 +180,10 @@ let
 
   extractDocs = api.extractDocs internals.raw;
 
+  bench = import ./bench { inherit lib pkgs; };
+
 in fx // {
-  inherit extractDocs;
+  inherit extractDocs bench;
 
   # Content derivation for docs.kleisli.io.
   # Returns a directory of markdown files with front matter, structured as
@@ -190,12 +193,23 @@ in fx // {
     nix-effects = fx // { inherit extractDocs; };
   };
 
-  tests = {
-    integration = integrationTests;
-    inline = inlineTests;
-    allPass = integrationTests.allPass
-              && (api.runTests inlineTests).allPass;
-    # For nix-unit (flake.nix exposes this as the tests output)
-    nix-unit = nixUnitTests;
-  };
+  tests =
+    let
+      perModule = builtins.mapAttrs (_: api.runTests) inlineTests;
+      # Collect all failed tests across modules
+      inlineFailed = lib.foldlAttrs (acc: modName: modResult:
+        acc // (lib.mapAttrs' (testName: test: {
+          name = "${modName}.${testName}";
+          value = test;
+        }) modResult.failed)
+      ) {} perModule;
+    in perModule // {
+      integration = integrationTests;
+      inline = inlineTests;
+      allPass = integrationTests.allPass
+                && lib.all (m: m.allPass) (builtins.attrValues perModule);
+      failed = inlineFailed;
+      # For nix-unit (flake.nix exposes this as the tests output)
+      nix-unit = nixUnitTests;
+    };
 }

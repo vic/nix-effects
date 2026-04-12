@@ -56,8 +56,8 @@ let
     value = { resource, maxUses }: send "linearAcquire" { inherit resource maxUses; };
     tests = {
       "acquire-is-impure" = {
-        expr = (acquire { resource = "x"; maxUses = 1; })._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (acquire { resource = "x"; maxUses = 1; });
+        expected = false;
       };
       "acquire-effect-name" = {
         expr = (acquire { resource = "x"; maxUses = 1; }).effect.name;
@@ -91,8 +91,8 @@ let
     value = token: send "linearConsume" { inherit token; };
     tests = {
       "consume-is-impure" = {
-        expr = (consume { _linear = true; id = 0; resource = "x"; })._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (consume { _linear = true; id = 0; resource = "x"; });
+        expected = false;
       };
       "consume-effect-name" = {
         expr = (consume { _linear = true; id = 0; resource = "x"; }).effect.name;
@@ -120,8 +120,8 @@ let
     value = token: send "linearRelease" { inherit token; };
     tests = {
       "release-is-impure" = {
-        expr = (release { _linear = true; id = 0; resource = "x"; })._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (release { _linear = true; id = 0; resource = "x"; });
+        expected = false;
       };
       "release-effect-name" = {
         expr = (release { _linear = true; id = 0; resource = "x"; }).effect.name;

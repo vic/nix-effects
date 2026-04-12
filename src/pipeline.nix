@@ -70,11 +70,11 @@ let
         expected = "my-stage";
       };
       "stage-transform-produces-computation" = {
-        expr = ((mkStage {
+        expr = fx.comp.isPure ((mkStage {
           name = "add-x";
           transform = data: pure (data // { x = 1; });
-        }).transform {})._tag;
-        expected = "Pure";
+        }).transform {});
+        expected = true;
       };
     };
   };

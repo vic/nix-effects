@@ -259,8 +259,8 @@ let
       };
       # -- Validate --
       "auto-validate-returns-impure" = {
-        expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42)._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure ((mkType { name = "T"; kernelType = H.any; }).validate 42);
+        expected = false;
       };
       "auto-validate-effect-name" = {
         expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42).effect.name;
@@ -279,8 +279,8 @@ let
             kernelType = H.any;
             verify = _self: v: pure v;
           };
-          in (t.validate 42)._tag;
-        expected = "Pure";
+          in fx.comp.isPure (t.validate 42);
+        expected = true;
       };
     };
   };
@@ -382,8 +382,8 @@ let
         expr =
           let
             t = mkType { name = "Int"; kernelType = H.int_; };
-          in (validate t 42 "test")._tag;
-        expected = "Impure";
+          in fx.comp.isPure (validate t 42 "test");
+        expected = false;
       };
       "validate-effect-name" = {
         expr =

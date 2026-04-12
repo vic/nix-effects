@@ -5,12 +5,32 @@ All notable changes to nix-effects are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-04-12
 
 ### Added
 
+- `comp.nix`: Computation ADT module — single source of truth for `Pure`/`Impure` construction and elimination via `pure`, `impure`, `isPure`, and `match`. All modules now use these constructors instead of raw `_tag` attrset literals (addresses #2)
 - `kernel.pipe`: chain a computation through Kleisli arrows, threading results via bind (closes #6)
 - `kernel.kleisli`: Kleisli composition `(a -> M b) -> (b -> M c) -> (a -> M c)`
+- `queue.identity`: sentinel variant representing the identity continuation, letting the trampoline skip queue application for bare `send` effects
+- Benchmark infrastructure: `nix run .#bench` / `nix run .#bench-compare` with named history, 3-run median, and comparison tables
+- Benchmark apps: expression interpreter (`apps/interp`) and dependency graph evaluator (`apps/build-sim`) with scalable workload generators
+- Benchmark stress tests: effectHeavy, bindHeavy, mixed, rawGC microbenchmarks for diagnosing bottlenecks
+- Per-module test result reporting in `tests` output
+
+### Changed
+
+- Trampoline interpreter processes continuation queues inline via recursive `applyQueue` (depth-limited to 500, with genericClosure fallback for deep pure chains), keeping 1 genericClosure step per effect — 78% faster on effectHeavy 100k, 72% faster on mixed 100k vs 0.4.0
+- `send` uses Identity queue instead of `singleton pure`, eliminating one wasted identity continuation application per effect
+- `queue.viewlGo` fast-path: returns immediately when left child is already a Leaf, skipping genericClosure entry for the common case
+- `queue.snoc` and `queue.append` handle Identity variant transparently
+- All source modules migrated from raw `{ _tag = "Pure"; ... }` / `{ _tag = "Impure"; ... }` literals to `comp.pure` / `comp.impure` constructors, and from `._tag == "Pure"` checks to `comp.isPure`
+- README and book reframed around the effect layer as the primary abstraction; removed Fire Triangle framing
+- Book: trampoline guide updated to use `isPure`
+
+### Fixed
+
+- `build.materialize`: step-script env test matched exact quoting instead of presence
 
 ### Removed
 

@@ -163,7 +163,7 @@ let
   projectJson = builtins.toJSON {
     id = "nix-effects";
     name = "nix-effects";
-    description = "A type-checking kernel, algebraic effects, and dependent types in pure Nix.";
+    description = "A freer-monad effect layer with a dependent type checker, all in pure Nix.";
     source-url = "https://github.com/kleisli-io/nix-effects";
     index = "index.md";
     sections = [

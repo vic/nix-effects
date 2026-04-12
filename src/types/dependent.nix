@@ -289,8 +289,8 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
-          in (piT.checkAt (x: x * 2) 21)._tag;
-        expected = "Impure";
+          in fx.comp.isPure (piT.checkAt (x: x * 2) 21);
+        expected = false;
       };
       "pi-checkAt-first-effect-is-typeCheck" = {
         expr =
@@ -316,8 +316,8 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
-          in (piT.validate (x: x))._tag;
-        expected = "Impure";
+          in fx.comp.isPure (piT.validate (x: x));
+        expected = false;
       };
       "pi-validate-is-one-arg" = {
         # validate takes ONE arg (the value to check for introduction form).
@@ -337,8 +337,8 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
-          in (piT.checkAt 42 5)._tag;
-        expected = "Impure";
+          in fx.comp.isPure (piT.checkAt 42 5);
+        expected = false;
       };
       "pi-checkAt-total-context" = {
         expr =
@@ -680,8 +680,8 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in (sigT.validate { fst = 1; snd = 2; })._tag;
-        expected = "Impure";
+          in fx.comp.isPure (sigT.validate { fst = 1; snd = 2; });
+        expected = false;
       };
       "sigma-validate-effect-is-typeCheck" = {
         expr =
@@ -698,24 +698,24 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in (sigT.validate 42)._tag;
-        expected = "Impure";
+          in fx.comp.isPure (sigT.validate 42);
+        expected = false;
       };
       "sigma-validate-total-on-missing-fields" = {
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in (sigT.validate { x = 1; })._tag;
-        expected = "Impure";
+          in fx.comp.isPure (sigT.validate { x = 1; });
+        expected = false;
       };
       "sigma-pairE-returns-computation" = {
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in (sigT.pairE 1 2)._tag;
-        expected = "Impure";
+          in fx.comp.isPure (sigT.pairE 1 2);
+        expected = false;
       };
       "sigma-curry-uncurry" = {
         expr =
@@ -934,8 +934,8 @@ let
               predicate = x: x > 0;
               name = "PosInt";
             };
-          in (PosInt.certifyE 5)._tag;
-        expected = "Impure";
+          in fx.comp.isPure (PosInt.certifyE 5);
+        expected = false;
       };
       "certified-certifyE-effect-is-typeCheck" = {
         expr =
@@ -961,8 +961,8 @@ let
               predicate = x: x > 0;
               name = "PosInt";
             };
-          in (PosInt.validate { fst = 5; snd = true; })._tag;
-        expected = "Impure";
+          in fx.comp.isPure (PosInt.validate { fst = 5; snd = true; });
+        expected = false;
       };
       "certify-constructs-valid-pair" = {
         expr =

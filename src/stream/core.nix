@@ -25,8 +25,8 @@ let
     value = v: pure { _tag = "Done"; value = v; };
     tests = {
       "done-is-pure" = {
-        expr = (done null)._tag;
-        expected = "Pure";
+        expr = fx.comp.isPure (done null);
+        expected = true;
       };
       "done-value-tag" = {
         expr = (done null).value._tag;
@@ -46,8 +46,8 @@ let
     value = head: tail: pure { _tag = "More"; inherit head tail; };
     tests = {
       "more-is-pure" = {
-        expr = (more 1 (done null))._tag;
-        expected = "Pure";
+        expr = fx.comp.isPure (more 1 (done null));
+        expected = true;
       };
       "more-head" = {
         expr = (more 42 (done null)).value.head;

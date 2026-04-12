@@ -48,7 +48,7 @@ returns `[]` (i.e., when we reach a `Pure` node).
 steps = builtins.genericClosure {
   startSet = [{ key = 0; _comp = comp; _state = initialState; }];
   operator = step:
-    if step._comp._tag == "Pure"
+    if isPure step._comp
     then []          # halt
     else [ nextStep ]; # one more step
 };

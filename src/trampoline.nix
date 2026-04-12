@@ -9,9 +9,10 @@
 # Gibbons (2021) "CPS, Defunctionalization, Accumulations, and Associativity" —
 # the hidden precondition is associativity of the operation being accumulated.
 #
-# Continuations are FTCQueue-based: each trampoline step calls qApp to
-# process the continuation queue, yielding the next computation node
-# (Pure or Impure).
+# After handling an effect, the continuation queue is processed inline via
+# recursive applyQueue, keeping 1 genericClosure step per effect. For deep
+# pure chains (>500 continuations), applyQueue falls back to a
+# genericClosure-based qAppSlow for stack safety.
 #
 # Critical implementation detail: genericClosure only forces the `key` field
 # (for deduplication). Handler state and continuation values would accumulate
@@ -23,10 +24,94 @@
 
 let
   queue = fx.queue;
+  inherit (fx.comp) pure impure isPure;
   inherit (api) mk;
 
-  # Pure constructor needed for abort path (avoids circular import)
-  mkPure = value: { _tag = "Pure"; inherit value; };
+  # -- Queue application --
+  #
+  # Applies continuations left-to-right until hitting Impure or exhausting
+  # the queue. Recursive with a depth limit of 500: beyond that, falls back
+  # to genericClosure-based qAppSlow for stack safety. Processing the queue
+  # inside the trampoline operator keeps 1 genericClosure step per effect.
+
+  applyQueue = q: val: depth:
+    let
+      vl = queue.viewl q;
+      result = vl.head val;
+    in
+      if vl.tail == null then result
+      else if !(isPure result) then
+        impure result.effect (queue.append result.queue vl.tail)
+      else if depth >= 500 then
+        # Deep pure chain: switch to genericClosure for stack safety.
+        qAppSlow vl.tail result.value
+      else
+        applyQueue vl.tail (builtins.seq result.value result.value) (depth + 1);
+
+  # genericClosure-based queue application for deep pure chains (>500
+  # continuations). Iterates via genericClosure for stack safety.
+  qAppSlow = q: val:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; _queue = q; _val = val; }];
+        operator = state:
+          let
+            vl = queue.viewl state._queue;
+            result = vl.head state._val;
+          in
+            if vl.tail != null && isPure result
+            then [{ key = builtins.seq result.value (state.key + 1);
+                    _queue = vl.tail; _val = result.value; }]
+            else [];
+      };
+      last = lib.last steps;
+      vl = queue.viewl last._queue;
+      result = vl.head last._val;
+    in
+      if vl.tail == null then result
+      else impure result.effect (queue.append result.queue vl.tail);
+
+  # -- Interpreter --
+
+  interpret = { comp, handlers, initialState }:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{
+          key = 0;
+          _comp = comp;
+          _state = initialState;
+        }];
+        operator = step:
+          if isPure step._comp then []
+          else
+            let
+              eff = step._comp.effect;
+              handler = handlers.${eff.name} or
+                (throw "nix-effects: unhandled effect '${eff.name}'");
+              result = handler {
+                param = eff.param;
+                state = step._state;
+              };
+              newState = if result ? state then result.state
+                else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
+              # deepSeq newState in key: genericClosure forces key for dedup,
+              # which forces newState, breaking the thunk chain.
+              k = builtins.deepSeq newState (step.key + 1);
+            in
+              if result ? abort then
+                [{ key = k; _comp = pure result.abort; _state = newState; }]
+              else if result ? resume then
+                let
+                  q = step._comp.queue;
+                  nextComp =
+                    if q._variant == "Identity" then pure result.resume
+                    else applyQueue q result.resume 0;
+                in [{ key = k; _comp = nextComp; _state = newState; }]
+              else
+                throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
+      };
+      final = lib.last steps;
+    in { value = final._comp.value; state = final._state; };
 
   run = mk {
     doc = ''
@@ -56,54 +141,8 @@ let
     '';
     value = comp: handlers: initialState:
       assert (builtins.isAttrs comp && comp ? _tag)
-        || builtins.throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-      let
-        steps = builtins.genericClosure {
-          startSet = [{
-            key = 0;
-            _comp = comp;
-            _state = initialState;
-          }];
-          operator = step:
-            if step._comp._tag == "Pure"
-            then []
-            else
-              let
-                eff = step._comp.effect;
-                handler = handlers.${eff.name} or
-                  (builtins.throw "nix-effects: unhandled effect '${eff.name}'");
-                result = handler {
-                  param = eff.param;
-                  state = step._state;
-                };
-                newState = if result ? state then result.state
-                  else builtins.throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
-              in
-                if result ? abort then
-                  # Non-resumption: discard continuation, return abort value
-                  [{
-                    key = builtins.deepSeq newState (step.key + 1);
-                    _comp = mkPure result.abort;
-                    _state = newState;
-                  }]
-                else if result ? resume then
-                  # Resumption: feed value to continuation queue
-                  let nextComp = queue.qApp step._comp.queue result.resume;
-                  in [{
-                    # deepSeq newState in key: genericClosure forces key for dedup,
-                    # which forces newState, breaking the thunk chain.
-                    key = builtins.deepSeq newState (step.key + 1);
-                    _comp = nextComp;
-                    _state = newState;
-                  }]
-                else
-                  builtins.throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
-        };
-        final = lib.last steps;
-      in {
-        value = final._comp.value;
-        state = final._state;
-      };
+        || throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+      interpret { inherit comp handlers initialState; };
   };
 
   # -- Handler combinator --
@@ -130,56 +169,15 @@ let
       state ? null,
     }: comp:
       assert (builtins.isAttrs comp && comp ? _tag)
-        || builtins.throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-      let
-        steps = builtins.genericClosure {
-          startSet = [{
-            key = 0;
-            _comp = comp;
-            _state = state;
-          }];
-          operator = step:
-            if step._comp._tag == "Pure"
-            then []
-            else
-              let
-                eff = step._comp.effect;
-                handler = handlers.${eff.name} or
-                  (builtins.throw "nix-effects: unhandled effect '${eff.name}'");
-                result = handler {
-                  param = eff.param;
-                  state = step._state;
-                };
-                newState = if result ? state then result.state
-                  else builtins.throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
-              in
-                if result ? abort then
-                  [{
-                    key = builtins.deepSeq newState (step.key + 1);
-                    _comp = mkPure result.abort;
-                    _state = newState;
-                  }]
-                else if result ? resume then
-                  let nextComp = queue.qApp step._comp.queue result.resume;
-                  in [{
-                    key = builtins.deepSeq newState (step.key + 1);
-                    _comp = nextComp;
-                    _state = newState;
-                  }]
-                else
-                  builtins.throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
-        };
-        final = lib.last steps;
-      in return final._comp.value final._state;
+        || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+      let r = interpret { inherit comp handlers; initialState = state; };
+      in return r.value r.state;
     tests = {
       "handle-with-default-return" = {
         expr =
           let
-            send' = name: param: {
-              _tag = "Impure";
-              effect = { inherit name param; };
-              queue = queue.singleton (value: { _tag = "Pure"; inherit value; });
-            };
+            send' = name: param:
+              fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
             comp = send' "double" 21;
             result = handle {
               handlers.double = { param, state }: { resume = param * 2; inherit state; };
@@ -190,7 +188,7 @@ let
       "handle-with-custom-return" = {
         expr =
           let
-            comp = { _tag = "Pure"; value = 21; };
+            comp = pure 21;
             result = handle {
               return = v: s: { value = v * 2; state = s; };
               handlers = {};
@@ -201,14 +199,11 @@ let
       "handle-abort-discards-continuation" = {
         expr =
           let
-            send' = name: param: {
-              _tag = "Impure";
-              effect = { inherit name param; };
-              queue = queue.singleton (value: { _tag = "Pure"; inherit value; });
-            };
+            send' = name: param:
+              fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
             kernelBind = comp: f:
-              if comp._tag == "Pure" then f comp.value
-              else { _tag = "Impure"; inherit (comp) effect; queue = queue.snoc comp.queue f; };
+              if isPure comp then f comp.value
+              else fx.comp.impure comp.effect (fx.queue.snoc comp.queue f);
             comp = kernelBind (send' "fail" "boom") (_: send' "get" null);
             result = handle {
               handlers = {

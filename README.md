@@ -95,10 +95,22 @@ Add nix-effects as a flake input:
 }
 ```
 
-Or import directly:
+Or import directly (non-flake):
 
 ```nix
-let fx = import ./path/to/nix-effects { lib = nixpkgs.lib; };
+let
+  pkgs = import <nixpkgs> {};
+  fx = import ./path/to/nix-effects { lib = pkgs.lib; };
+in ...
+```
+
+To also get benchmark runner derivations (`fx.bench.run`, `fx.bench.compare`),
+pass `pkgs`:
+
+```nix
+let
+  pkgs = import <nixpkgs> {};
+  fx = import ./path/to/nix-effects { inherit pkgs; lib = pkgs.lib; };
 in ...
 ```
 
@@ -271,8 +283,9 @@ Available: `fromList`, `iterate`, `range`, `replicate`, `map`, `filter`,
 The `fx` attrset is the entire public API:
 
 ```
-fx.pure         fx.impure       fx.send         fx.bind
-fx.map          fx.seq
+fx.pure         fx.impure       fx.isPure       fx.match
+fx.send         fx.bind         fx.map          fx.seq
+fx.pipe         fx.kleisli
 fx.run          fx.handle       fx.adapt        fx.adaptHandlers
 
 fx.types.mkType     fx.types.check      fx.types.validate
@@ -317,6 +330,7 @@ fx.types.extract                        fx.types.verifyAndExtract
 fx.types.decide                         fx.types.decideType
 
 fx.kernel.pure      fx.kernel.send      fx.kernel.bind
+fx.kernel.pipe      fx.kernel.kleisli
 fx.trampoline.handle
 ```
 
@@ -330,12 +344,17 @@ T._kernel          -- the kernel type (HOAS tree)
 
 ## How it works
 
-Computations are freer monad values: `Pure value` or `Impure effect continuation`.
-`bind` appends to an `FTCQueue` (catenable queue) in O(1).
+Computations are freer monad values: `Pure value` or `Impure effect continuation`,
+constructed via `comp.pure` and `comp.impure` (the `comp` module is the single
+source of truth for the Computation ADT). `bind` appends to an `FTCQueue`
+(catenable queue) in O(1). `send` uses an `Identity` queue sentinel so the
+trampoline can skip the identity continuation application entirely.
+
 The interpreter uses `builtins.genericClosure` — Nix's only iterative
 primitive — as a trampoline, giving O(1) stack depth for the main
-dispatch loop. Each step calls the handler for the current effect,
-feeds the result to the continuation queue, and produces the next node.
+dispatch loop. Each step calls the handler for the current effect, processes
+the continuation queue inline via recursive `applyQueue`, and produces the
+next computation node — one genericClosure step per effect.
 `deepSeq` on the handler state in the `key` field breaks thunk chains
 that would otherwise blow memory. Test suite validates 100,000 operations;
 manual runs confirm 1,000,000 operations in ~3 seconds with constant memory.
@@ -373,11 +392,12 @@ forwarding to outer handlers. The `adapt` combinator addresses state
 shape composition, not effect isolation.
 
 **O(1) stack depth caveat.** The trampoline gives O(1) stack for the main
-dispatch loop. Both `qApp` (continuation application) and `viewlGo` (queue
-rotation) are trampolined via `builtins.genericClosure`, so chains of
-10,000+ pure binds and deep left-nested queues are handled iteratively.
-The remaining stack risk is in user-supplied handler functions that recurse
-deeply within a single trampoline step.
+dispatch loop. Continuation queue application is inlined as a recursive
+function (depth-limited to 500) with a `genericClosure` fallback for deep
+pure chains, so chains of 10,000+ pure binds are handled iteratively.
+Queue rotation (`viewlGo`) uses `genericClosure` for deep left-nested
+trees. The remaining stack risk is in user-supplied handler functions
+that recurse deeply within a single trampoline step.
 
 **Handler state must be deepSeq-safe.** The trampoline uses
 `builtins.deepSeq` on handler state at each step to break thunk chains.

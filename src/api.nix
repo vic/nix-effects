@@ -59,12 +59,25 @@ rec {
     else {};
 
   # Run collected tests, returning { allPass, passed, failed, summary }.
+  # Handles nested namespaces from extractTests: recurses into attrsets
+  # that lack `expr` (namespaces), runs leaf attrsets with `expr` + `expected`.
   runTests = tests:
     let
+      # Flatten nested test tree into { "ns.sub.test-name" = { expr; expected; }; }
+      flatten = prefix: attrs:
+        lib.foldlAttrs (acc: name: value:
+          let path = if prefix == "" then name else "${prefix}.${name}";
+          in if builtins.isAttrs value && value ? expr && value ? expected
+             then acc // { ${path} = value; }
+             else if builtins.isAttrs value
+             then acc // (flatten path value)
+             else acc
+        ) {} attrs;
+      flat = flatten "" tests;
       results = builtins.mapAttrs (name: test:
         let actual = test.expr; in
         { inherit name actual; expected = test.expected; pass = actual == test.expected; }
-      ) tests;
+      ) flat;
       passedNames = lib.filterAttrs (_: r: r.pass) results;
       failedNames = lib.filterAttrs (_: r: !r.pass) results;
       nPassed = builtins.length (builtins.attrNames passedNames);

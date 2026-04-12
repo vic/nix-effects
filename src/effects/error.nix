@@ -25,8 +25,8 @@ let
     value = message: send "error" { inherit message; context = ""; };
     tests = {
       "raise-is-impure" = {
-        expr = (raise "boom")._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (raise "boom");
+        expected = false;
       };
       "raise-effect-name" = {
         expr = (raise "boom").effect.name;

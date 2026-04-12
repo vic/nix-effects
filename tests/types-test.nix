@@ -139,7 +139,7 @@ let
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       comp = piT.checkAt (x: x * 2) 21;
-    in comp._tag == "Impure"
+    in !(fx.isPure comp)
        && comp.effect.name == "typeCheck"
        && comp.effect.param.type.name == "Int";
 
@@ -229,7 +229,7 @@ let
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.Int; universe = 0; };
       comp = sigT.validate { fst = 1; snd = 2; };
-    in comp._tag == "Impure"
+    in !(fx.isPure comp)
        && comp.effect.name == "typeCheck";
 
   # -- Test 17: Sigma.validate through strict handler --
@@ -262,7 +262,7 @@ let
         name = "PosInt";
       };
       comp = PosInt.certifyE 5;
-    in comp._tag == "Impure"
+    in !(fx.isPure comp)
        && comp.effect.name == "typeCheck";
 
   # -- Test 19: Certified.certifyE through collecting handler --
@@ -359,7 +359,7 @@ let
   foundationValidateIsEffectful =
     let
       comp = types.validate types.Int 42 "test-context";
-    in comp._tag == "Impure"
+    in !(fx.isPure comp)
        && comp.effect.name == "typeCheck"
        && comp.effect.param.context == "test-context";
 
@@ -376,7 +376,7 @@ let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       # validate takes ONE arg (the value to check as introduction form)
       comp = piT.validate (x: x);
-    in comp._tag == "Impure"
+    in !(fx.isPure comp)
        && comp.effect.name == "typeCheck"
        # The context is the type name, not "Π domain" — it's the guard,
        # not the elimination check
@@ -763,7 +763,7 @@ let
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-    in (listT.validate [1 2 3])._tag == "Impure";
+    in !(fx.isPure (listT.validate [1 2 3]));
 
   # -- Test 52: ListOf collecting handler gets per-element errors with indices --
   listOfCollectingPerElement =
@@ -788,7 +788,7 @@ let
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-    in (listT.validate [])._tag == "Pure";
+    in fx.isPure (listT.validate []);
 
   # -- Test 54: ListOf non-list input totality --
   listOfNonListTotality =
@@ -796,7 +796,7 @@ let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       # Non-list goes through effect system, doesn't crash
-    in (listT.validate 42)._tag == "Impure"
+    in !(fx.isPure (listT.validate 42))
        && (listT.validate 42).effect.name == "typeCheck";
 
   # -- Test 55: ListOf adequacy (check agrees with all-pass handler) --

@@ -13,7 +13,8 @@
 #
 #   data FTCQueue a b = Leaf (a -> Comp b)
 #                     | Node (FTCQueue a x) (FTCQueue x b)
-{ api, ... }:
+#                     | Identity            -- pure/id continuation (skipped by trampoline)
+{ api, fx, ... }:
 
 let
   inherit (api) mk;
@@ -42,6 +43,11 @@ let
     };
   };
 
+  # Identity: a queue containing only the identity (pure) continuation.
+  # The trampoline recognizes this variant and produces `pure resumeValue`
+  # directly, skipping queue application entirely.
+  identity = { _tag = "FTCQueue"; _variant = "Identity"; };
+
   # -- Operations --
 
   singleton = mk {
@@ -51,12 +57,17 @@ let
 
   snoc = mk {
     doc = "Append a continuation to the right of the queue. O(1).";
-    value = q: fn: node q (leaf fn);
+    value = q: fn:
+      if q._variant == "Identity" then leaf fn
+      else node q (leaf fn);
   };
 
   append = mk {
     doc = "Concatenate two queues. O(1).";
-    value = q1: q2: node q1 q2;
+    value = q1: q2:
+      if q1._variant == "Identity" then q2
+      else if q2._variant == "Identity" then q1
+      else node q1 q2;
   };
 
   # -- Deconstruction --
@@ -99,18 +110,27 @@ let
     };
   };
 
-  # Internal helper for viewl tree rotation (trampolined via genericClosure)
+  # Rotate the tree leftward to find the leftmost Leaf (amortized O(1)).
+  # Fast-path: if left is already a Leaf, return immediately without
+  # entering genericClosure. This handles the common case (queues built
+  # by a single snoc) with zero overhead.
+  # For deeper trees, genericClosure provides stack-safe iteration.
   viewlGo = left: right:
-    let
-      steps = builtins.genericClosure {
-        startSet = [{ key = 0; _left = left; _right = right; }];
-        operator = state:
-          if state._left._variant == "Leaf"
-          then []
-          else [{ key = state.key + 1; _left = state._left.left; _right = node state._left.right state._right; }];
-      };
-      last = builtins.elemAt steps (builtins.length steps - 1);
-    in { head = last._left.fn; tail = last._right; };
+    if left._variant == "Leaf"
+    then { head = left.fn; tail = right; }
+    else
+      let
+        steps = builtins.genericClosure {
+          startSet = [{ key = 0; _left = left; _right = right; }];
+          operator = state:
+            if state._left._variant == "Leaf" then []
+            else [{ key = state.key + 1;
+                    _left = state._left.left;
+                    _right = { _tag = "FTCQueue"; _variant = "Node";
+                               left = state._left.right; right = state._right; }; }];
+        };
+        last = builtins.elemAt steps (builtins.length steps - 1);
+      in { head = last._left.fn; tail = last._right; };
 
   # -- Queue application --
 
@@ -131,7 +151,7 @@ let
               vl = viewl state._queue;
               result = vl.head state._val;
             in
-            if vl.tail != null && result._tag == "Pure"
+            if vl.tail != null && fx.comp.isPure result
             then [{ key = builtins.seq result.value (state.key + 1); _queue = vl.tail; _val = result.value; }]
             else [];
         };
@@ -141,22 +161,18 @@ let
       in
       if vl.tail == null
       then result
-      else {
-        _tag = "Impure";
-        inherit (result) effect;
-        queue = append result.queue vl.tail;
-      };
+      else fx.comp.impure result.effect (append result.queue vl.tail);
     tests = {
       "qApp-singleton-pure" = {
-        expr = (qApp (leaf (x: { _tag = "Pure"; value = x + 1; })) 41).value;
+        expr = (qApp (leaf (x: fx.comp.pure (x + 1))) 41).value;
         expected = 42;
       };
       "qApp-chains-pure" = {
         expr =
           let
             q = node.value
-              (leaf (x: { _tag = "Pure"; value = x + 10; }))
-              (leaf (x: { _tag = "Pure"; value = x * 2; }));
+              (leaf (x: fx.comp.pure (x + 10)))
+              (leaf (x: fx.comp.pure (x * 2)));
           in (qApp q 1).value;
         expected = 22;  # (1 + 10) * 2
       };
@@ -165,8 +181,8 @@ let
           let
             n = 10000;
             q = builtins.foldl' (acc: _:
-              snoc acc (x: { _tag = "Pure"; value = x + 1; })
-            ) (leaf (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) (n - 1));
+              snoc acc (x: fx.comp.pure (x + 1))
+            ) (leaf (x: fx.comp.pure (x + 1))) (builtins.genList (_: null) (n - 1));
           in (qApp q 0).value;
         expected = 10000;
       };
@@ -174,9 +190,9 @@ let
         expr =
           let
             pureQ = builtins.foldl' (acc: _:
-              snoc acc (x: { _tag = "Pure"; value = x + 1; })
-            ) (leaf (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) 99);
-            impureK = x: { _tag = "Impure"; effect = { tag = "test"; payload = x; }; queue = leaf (y: { _tag = "Pure"; value = y; }); };
+              snoc acc (x: fx.comp.pure (x + 1))
+            ) (leaf (x: fx.comp.pure (x + 1))) (builtins.genList (_: null) 99);
+            impureK = x: fx.comp.impure { tag = "test"; payload = x; } (leaf (y: fx.comp.pure y));
             q = snoc pureQ impureK;
           in (qApp q 0).effect.payload;
         expected = 100;
@@ -187,6 +203,6 @@ let
 in mk {
   doc = "FTCQueue (catenable queue, after Kiselyov & Ishii 2015). O(1) snoc/append, amortized O(1) viewl.";
   value = {
-    inherit leaf node singleton snoc append viewl qApp;
+    inherit leaf node identity singleton snoc append viewl qApp;
   };
 }

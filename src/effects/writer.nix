@@ -20,8 +20,8 @@ let
     value = w: send "tell" w;
     tests = {
       "tell-is-impure" = {
-        expr = (tell "hello")._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (tell "hello");
+        expected = false;
       };
       "tell-effect-name" = {
         expr = (tell "hello").effect.name;
@@ -41,8 +41,8 @@ let
     value = ws: send "tellAll" ws;
     tests = {
       "tellAll-is-impure" = {
-        expr = (tellAll [ 1 2 3 ])._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (tellAll [ 1 2 3 ]);
+        expected = false;
       };
     };
   };

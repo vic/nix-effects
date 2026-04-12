@@ -20,8 +20,8 @@ let
     value = send "ask" null;
     tests = {
       "ask-is-impure" = {
-        expr = ask.value._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure ask.value;
+        expected = false;
       };
       "ask-effect-name" = {
         expr = ask.value.effect.name;
@@ -41,8 +41,8 @@ let
     value = f: bind (send "ask" null) (env: pure (f env));
     tests = {
       "asks-is-impure" = {
-        expr = (asks (e: e.x))._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (asks (e: e.x));
+        expected = false;
       };
     };
   };
@@ -64,8 +64,8 @@ let
     value = f: comp: bind (send "local" f) (_: comp);
     tests = {
       "local-is-impure" = {
-        expr = (local (e: e) (pure 42))._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (local (e: e) (pure 42));
+        expected = false;
       };
     };
   };

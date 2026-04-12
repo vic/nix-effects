@@ -28,8 +28,8 @@ let
     value = alternatives: send "choose" alternatives;
     tests = {
       "choose-is-impure" = {
-        expr = (choose [ 1 2 3 ])._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (choose [ 1 2 3 ]);
+        expected = false;
       };
       "choose-effect-name" = {
         expr = (choose [ 1 2 3 ]).effect.name;
@@ -50,8 +50,8 @@ let
     value = send "choose" [];
     tests = {
       "fail-is-impure" = {
-        expr = fail.value._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure fail.value;
+        expected = false;
       };
       "fail-has-empty-alternatives" = {
         expr = fail.value.effect.param;
@@ -71,12 +71,12 @@ let
     value = cond: if cond then pure null else fail.value;
     tests = {
       "guard-true-is-pure" = {
-        expr = (guard true)._tag;
-        expected = "Pure";
+        expr = fx.comp.isPure (guard true);
+        expected = true;
       };
       "guard-false-is-impure" = {
-        expr = (guard false)._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (guard false);
+        expected = false;
       };
     };
   };

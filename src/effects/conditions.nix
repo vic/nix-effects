@@ -42,8 +42,8 @@ let
       send "condition" { inherit name data restarts; };
     tests = {
       "signal-is-impure" = {
-        expr = (signal "test" {} ["use-value" "abort"])._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (signal "test" {} ["use-value" "abort"]);
+        expected = false;
       };
       "signal-carries-name" = {
         expr = (signal "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
@@ -73,8 +73,8 @@ let
         else pure null);
     tests = {
       "warn-is-impure" = {
-        expr = (warn "deprecation" { feature = "old-api"; })._tag;
-        expected = "Impure";
+        expr = fx.comp.isPure (warn "deprecation" { feature = "old-api"; });
+        expected = false;
       };
     };
   };

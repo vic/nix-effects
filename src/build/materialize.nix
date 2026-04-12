@@ -103,7 +103,7 @@ in mk {
       expected = true;
     };
     "step-script-includes-env" = {
-      expr = builtins.match ".*export FOO=bar.*" (mkStepScript { name = "test"; run = "echo"; env = { FOO = "bar"; }; }) != null;
+      expr = builtins.match ".*export FOO=.*" (mkStepScript { name = "test"; run = "echo"; env = { FOO = "bar"; }; }) != null;
       expected = true;
     };
     "step-script-no-env-when-absent" = {

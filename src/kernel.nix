@@ -1,10 +1,8 @@
-# nix-effects kernel: Freer monad ADT with FTCQueue
+# nix-effects kernel: Freer monad operations with FTCQueue
 #
-# Implements the freer monad from Kiselyov & Ishii (2015):
-#   Computation a = Pure a | Impure (Effect x) (FTCQueue x a)
-#
-# Pure: computation finished with a value
-# Impure: computation suspended at an effect, with a queue of continuations
+# Monadic operations for the freer monad (Kiselyov & Ishii 2015).
+# The Computation ADT (Pure/Impure) lives in comp.nix; this module
+# builds send, bind, map, seq, pipe, and kleisli on top of it.
 #
 # The FTCQueue gives O(1) bind (snoc onto queue) instead of O(n)
 # continuation composition. Left-nested bind chains are now O(n) total
@@ -13,61 +11,23 @@
 
 let
   queue = fx.queue;
+  inherit (fx.comp) pure impure isPure;
   inherit (api) mk;
-
-  # -- Core ADT --
-
-  pure = mk {
-    doc = "Lift a value into a pure computation (Return constructor).";
-    value = value: { _tag = "Pure"; inherit value; };
-    tests = {
-      "creates-pure" = {
-        expr = (pure 42)._tag;
-        expected = "Pure";
-      };
-      "stores-value" = {
-        expr = (pure 42).value;
-        expected = 42;
-      };
-    };
-  };
-
-  impure = mk {
-    doc = "Create a suspended computation (OpCall constructor). Takes an effect and a continuation queue.";
-    value = effect: q: {
-      _tag = "Impure";
-      inherit effect;
-      queue = q;
-    };
-    tests = {
-      "creates-impure" = {
-        expr = (impure { name = "test"; param = null; } (queue.singleton (x: pure x)))._tag;
-        expected = "Impure";
-      };
-    };
-  };
 
   # -- Derived operations --
 
   send = mk {
     doc = "Send an effect request. Returns the handler's response via continuation.";
-    value = name: param: {
-      _tag = "Impure";
-      effect = { inherit name param; };
-      queue = queue.singleton (value: { _tag = "Pure"; inherit value; });
-    };
+    value = name: param:
+      impure { inherit name param; } queue.identity;
     tests = {
       "creates-impure-with-effect" = {
         expr = (send "get" null).effect.name;
         expected = "get";
       };
-      "queue-applied-returns-pure" = {
-        expr = (queue.qApp (send "get" null).queue 42)._tag;
-        expected = "Pure";
-      };
-      "queue-applied-passes-value" = {
-        expr = (queue.qApp (send "get" null).queue 42).value;
-        expected = 42;
+      "queue-is-identity" = {
+        expr = (send "get" null).queue._variant;
+        expected = "Identity";
       };
     };
   };
@@ -85,13 +45,9 @@ let
       O(1) per bind via FTCQueue snoc (Kiselyov & Ishii 2015, Section 3.1).
     '';
     value = comp: f:
-      if comp._tag == "Pure"
-      then f comp.value
-      else {
-        _tag = "Impure";
-        inherit (comp) effect;
-        queue = queue.snoc comp.queue f;
-      };
+      if isPure comp then f comp.value
+      else if comp.queue._variant == "Identity" then impure comp.effect (queue.singleton f)
+      else impure comp.effect (queue.snoc comp.queue f);
     tests = {
       "pure-bind-applies-f" = {
         expr = (bind (pure 21) (x: pure (x * 2))).value;
@@ -101,12 +57,12 @@ let
         expr = (bind (send "get" null) (x: pure x)).effect.name;
         expected = "get";
       };
-      "impure-bind-chains-via-queue" = {
+      "impure-bind-has-singleton-queue" = {
         expr =
           let
             comp = bind (send "get" null) (x: pure (x + 1));
-          in (queue.qApp comp.queue 10).value;
-        expected = 11;
+          in comp.queue._variant;
+        expected = "Leaf";
       };
     };
   };
@@ -133,8 +89,8 @@ let
         comps;
     tests = {
       "sequences-empty" = {
-        expr = (seq [])._tag;
-        expected = "Pure";
+        expr = isPure (seq []);
+        expected = true;
       };
     };
   };
