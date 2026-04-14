@@ -8,6 +8,7 @@
 #   arithmetic   — add with 7 verified properties including commutativity
 #   algebra      — Monoid, Category types; (Nat,+,0) instances
 #   functor      — doubling endofunctor with functoriality proof
+#   yoneda       — Yoneda's lemma with both round-trip proofs
 #
 # Test:
 #   nix-instantiate --eval --strict --expr \
@@ -24,6 +25,7 @@ let
   arithmetic  = import ./arithmetic.nix { inherit prelude; };
   algebra     = import ./algebra.nix { inherit prelude arithmetic; };
   functor     = import ./functor.nix { inherit prelude arithmetic; };
+  yoneda      = import ./yoneda.nix { inherit prelude; };
 
   H = prelude.H;
   checkHoas = H.checkHoas;
@@ -48,6 +50,9 @@ in rec {
 
     # Functor
     inherit (functor) double preserveId preserveComp;
+
+    # Yoneda
+    inherit (yoneda) yonedaEval yonedaLift evalLift liftEval;
   };
 
   # -- HOAS types and implementations (for advanced use) --
@@ -68,6 +73,10 @@ in rec {
     inherit (functor) doubleTy doubleImpl
                       preserveIdTy preserveIdImpl
                       preserveCompTy preserveCompImpl;
+    inherit (yoneda) yonedaEvalTy yonedaEvalImpl
+                     yonedaLiftTy yonedaLiftImpl
+                     evalLiftTy evalLiftImpl
+                     liftEvalTy liftEvalImpl;
   };
 
   # -- Tests: each evaluates to true if the proof type-checks --
@@ -99,6 +108,12 @@ in rec {
     preserveId   = checks functor.preserveIdTy functor.preserveIdImpl;
     preserveComp = checks functor.preserveCompTy functor.preserveCompImpl;
 
+    # Yoneda's lemma
+    yonedaEval = checks yoneda.yonedaEvalTy yoneda.yonedaEvalImpl;
+    yonedaLift = checks yoneda.yonedaLiftTy yoneda.yonedaLiftImpl;
+    evalLift   = checks yoneda.evalLiftTy yoneda.evalLiftImpl;
+    liftEval   = checks yoneda.liftEvalTy yoneda.liftEvalImpl;
+
     # Extracted functions compute correctly
     addComputes      = api.add 3 5 == 8;
     addComm7_3       = api.add 7 3 == api.add 3 7;
@@ -110,6 +125,7 @@ in rec {
       && addRightZero && addAssoc && addRightSucc && addComm
       && natAddMonoid && natCategory && compComm
       && double && preserveId && preserveComp
+      && yonedaEval && yonedaLift && evalLift && liftEval
       && addComputes && addComm7_3 && doubleComputes;
   };
 }

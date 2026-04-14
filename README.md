@@ -214,15 +214,18 @@ type-checked at Nix eval time. If evaluation completes, the proofs are correct.
   types, with `(Nat, +, 0)` as a verified instance of both
 - **Functor**: doubling endofunctor with identity and composition preservation
   proved via a 5-step equational rewriting chain
+- **Yoneda's lemma**: for any type A, point a : A, and type family B : A → U,
+  the space of sections Π(x:A). Eq(A,a,x) → B(x) is isomorphic to B(a).
+  Both directions verified with round-trip proofs — `evalLift` by the
+  computation rule of J, `liftEval` by path induction
 
 ```nix
 let
   fx = import ./. {};
   cat = import ./apps/category-theory { inherit fx; };
 in {
-  cat.tests.allPass;          # true — all 15 proofs verified + 3 computation tests
+  cat.tests.allPass;          # true — all 22 tests pass (19 proofs + 3 computation)
   cat.api.add 3 5;            # 8 — extracted Nix function
-  cat.api.sym;                # callable: Eq(A,a,b) → Eq(A,b,a)
   cat.api.double 4;           # 8
 }
 ```
