@@ -15,14 +15,16 @@
 
 let
   inherit (api) mk;
+  term = fx.tc.term;
   val = fx.tc.value;
   inherit (val) mkClosure freshVar
     vLam vPi vSigma vPair vNat vZero vSucc
     vBool vTrue vFalse vList vNil vCons
     vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
+    vDesc vDescRet vDescArg vDescRec vDescPi vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
+    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq eDescInd eDescElim;
 
   defaultFuel = 10000000;
 
@@ -146,6 +148,299 @@ let
       vNe eq.level (eq.spine ++ [ (eJ type lhs motive base rhs) ])
     else throw "tc: vJ on non-eq (tag=${eq.tag})";
 
+  # vDescInd — generic eliminator for description-based inductive types.
+  # ind D P step (con d) = step d (everywhere D P (ind D P step) d)
+  vDescIndF = fuel: D: motive: step: scrut:
+    if fuel <= 0 then throw "normalization budget exceeded"
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eDescInd D motive step) ])
+    else if scrut.tag == "VDescCon" then
+      let
+        f = fuel - 1;
+        d = scrut.d;
+        # Build ih as a VLam: λx. ind D motive step x
+        # Closure env = [step, motive, D]; under x: Var 0=x, 1=step, 2=motive, 3=D
+        ihVal = vLam "x" (vMu D)
+          (mkClosure [step motive D]
+            (term.mkDescInd (term.mkVar 3) (term.mkVar 2) (term.mkVar 1) (term.mkVar 0)));
+        evResult = everywhereF f D D motive ihVal d;
+      in vAppF f (vAppF f step d) evResult
+    else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
+
+  # vDescElim — induction principle for Desc (4 cases: ret, arg, rec, pi).
+  # descElim P pr pa pe pp D : P D
+  vDescElimF = fuel: motive: onRet: onArg: onRec: onPi: scrut:
+    if fuel <= 0 then throw "normalization budget exceeded"
+    else let f = fuel - 1; in
+
+    if scrut.tag == "VDescRet" then onRet
+
+    else if scrut.tag == "VDescArg" then
+      let
+        S = scrut.S;
+        Tcl = scrut.T;
+        tLam = vLam "_" S Tcl;
+        # Higher-order IH: λ(s:S). descElim motive onRet onArg onRec onPi (T s)
+        # Closure env: [tLam, motive, onRet, onArg, onRec, onPi]
+        # When instantiated with s: env = [s, tLam, motive, onRet, onArg, onRec, onPi]
+        # s=0, tLam=1, motive=2, onRet=3, onArg=4, onRec=5, onPi=6
+        ihClosure = mkClosure [ tLam motive onRet onArg onRec onPi ]
+          (term.mkDescElim (term.mkVar 2) (term.mkVar 3) (term.mkVar 4)
+                           (term.mkVar 5) (term.mkVar 6)
+                           (term.mkApp (term.mkVar 1) (term.mkVar 0)));
+        ihLam = vLam "_" S ihClosure;
+      in
+        vAppF f (vAppF f (vAppF f onArg S) tLam) ihLam
+
+    else if scrut.tag == "VDescRec" then
+      let
+        D = scrut.D;
+        ihVal = vDescElimF f motive onRet onArg onRec onPi D;
+      in vAppF f (vAppF f onRec D) ihVal
+
+    else if scrut.tag == "VDescPi" then
+      let
+        S = scrut.S;
+        D = scrut.D;
+        ihVal = vDescElimF f motive onRet onArg onRec onPi D;
+      in vAppF f (vAppF f (vAppF f onPi S) D) ihVal
+
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eDescElim motive onRet onArg onRec onPi) ])
+
+    else throw "tc: vDescElim on non-desc (tag=${scrut.tag})";
+
+  # -- Pre-built interp motive and cases (static, built once at module load) --
+
+  # interpMotive : λ(D:Desc). U(0) → U(0)
+  interpMotive = vLam "_" vDesc
+    (mkClosure [] (term.mkPi "_" (term.mkU 0) (term.mkU 0)));
+
+  # interpOnRet : λ(X:U(0)). Unit
+  interpOnRet = vLam "X" (vU 0) (mkClosure [] term.mkUnit);
+
+  # interpOnArg : λ(S:U(0)). λ(T:S→Desc). λ(ih:Π(s:S).U→U). λ(X:U(0)). Σ(s:S). ih s X
+  # Under λS.λT.λih.λX: env = [X, ih, T, S]
+  # Under sigma binder s: env = [s, X, ih, T, S]
+  interpOnArg = vLam "S" (vU 0)
+    (mkClosure []
+      (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) term.mkDesc)
+        (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
+                           (term.mkPi "_" (term.mkU 0) (term.mkU 0)))
+          (term.mkLam "X" (term.mkU 0)
+            (term.mkSigma "s" (term.mkVar 3)
+              (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 0))
+                          (term.mkVar 1)))))));
+
+  # interpOnRec : λ(D:Desc). λ(ih:U→U). λ(X:U(0)). X × ih X
+  # Under λD.λih.λX: env = [X, ih, D]
+  # Under sigma binder: env = [_, X, ih, D]
+  interpOnRec = vLam "D" vDesc
+    (mkClosure []
+      (term.mkLam "ih" (term.mkPi "_" (term.mkU 0) (term.mkU 0))
+        (term.mkLam "X" (term.mkU 0)
+          (term.mkSigma "_" (term.mkVar 0)
+            (term.mkApp (term.mkVar 2) (term.mkVar 1))))));
+
+  # interpOnPi : λ(S:U(0)). λ(D:Desc). λ(ih:U→U). λ(X:U(0)). (S→X) × ih X
+  # Under λS.λD.λih.λX: env = [X, ih, D, S]
+  # Pi codomain (under _): env = [_, X, ih, D, S], mkVar 1 → X
+  # Sigma body (under _): env = [_, X, ih, D, S]
+  interpOnPi = vLam "S" (vU 0)
+    (mkClosure []
+      (term.mkLam "D" term.mkDesc
+        (term.mkLam "ih" (term.mkPi "_" (term.mkU 0) (term.mkU 0))
+          (term.mkLam "X" (term.mkU 0)
+            (term.mkSigma "_" (term.mkPi "_" (term.mkVar 3) (term.mkVar 1))
+              (term.mkApp (term.mkVar 2) (term.mkVar 1)))))));
+
+  # interp D X — interpretation of description D at family X
+  interpF = fuel: D: X:
+    let result = vDescElimF fuel interpMotive interpOnRet interpOnArg interpOnRec interpOnPi D;
+    in vAppF fuel result X;
+
+  # idx D d — extract target index (trivial for Phase 1, I = ⊤)
+  idxF = fuel: D: d: vTt;
+
+  # -- All type computation: All D P d (derived from descElim) --
+  # Cases are D'-independent module-level constants. Only the motive closes over D'.
+
+  # allOnRet : λP. λd. Unit  (no recursive args → trivial IH)
+  allOnRet = vLam "P" (vU 0) (mkClosure []
+    (term.mkLam "d" term.mkUnit term.mkUnit));
+
+  # allOnArg : λS. λT. λihA. λP. λd. ihA (fst d) P (snd d)
+  # Under λS.λT.λihA.λP.λd: env = [d, P, ihA, T, S]
+  allOnArg = vLam "S" (vU 0) (mkClosure []
+    (term.mkLam "T" term.mkDesc
+      (term.mkLam "ihA" term.mkDesc
+        (term.mkLam "P" (term.mkU 0)
+          (term.mkLam "d" (term.mkU 0)
+            (term.mkApp
+              (term.mkApp
+                (term.mkApp (term.mkVar 2) (term.mkFst (term.mkVar 0)))
+                (term.mkVar 1))
+              (term.mkSnd (term.mkVar 0))))))));
+
+  # allOnRec : λD. λihA. λP. λd. P(fst d) × ihA P (snd d)
+  # Under λD.λihA.λP.λd: env = [d, P, ihA, D]
+  # Sigma body (under _): env = [_, d, P, ihA, D]
+  allOnRec = vLam "D" vDesc (mkClosure []
+    (term.mkLam "ihA" term.mkDesc
+      (term.mkLam "P" (term.mkU 0)
+        (term.mkLam "d" (term.mkU 0)
+          (term.mkSigma "_"
+            (term.mkApp (term.mkVar 1) (term.mkFst (term.mkVar 0)))
+            (term.mkApp
+              (term.mkApp (term.mkVar 3) (term.mkVar 2))
+              (term.mkSnd (term.mkVar 1))))))));
+
+  # allOnPi : λS. λD. λihA. λP. λd. (Π(s:S). P(fst d s)) × ihA P (snd d)
+  # Under λS.λD.λihA.λP.λd: env = [d, P, ihA, D, S]
+  # Pi body (under s): env = [s, d, P, ihA, D, S]
+  # Sigma body (under _): env = [_, d, P, ihA, D, S]
+  allOnPi = vLam "S" (vU 0) (mkClosure []
+    (term.mkLam "D" term.mkDesc
+      (term.mkLam "ihA" term.mkDesc
+        (term.mkLam "P" (term.mkU 0)
+          (term.mkLam "d" (term.mkU 0)
+            (term.mkSigma "_"
+              (term.mkPi "s" (term.mkVar 4)
+                (term.mkApp (term.mkVar 2)
+                  (term.mkApp (term.mkFst (term.mkVar 1)) (term.mkVar 0))))
+              (term.mkApp
+                (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                (term.mkSnd (term.mkVar 1)))))))));
+
+  # Term-level counterparts of interpMotive / interpOn*. Required so we can
+  # embed a kernel-level `interp Dm μD'` expression inside mkAllMotive's body
+  # (see below). The term structures below match the value definitions at
+  # interpMotive / interpOnRet / interpOnArg / interpOnRec / interpOnPi;
+  # eval on these terms produces the same values up to α-β.
+  interpMotiveTm = term.mkLam "_" term.mkDesc
+    (term.mkPi "_" (term.mkU 0) (term.mkU 0));
+
+  interpOnRetTm = term.mkLam "X" (term.mkU 0) term.mkUnit;
+
+  interpOnArgTm = term.mkLam "S" (term.mkU 0)
+    (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) term.mkDesc)
+      (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
+                         (term.mkPi "_" (term.mkU 0) (term.mkU 0)))
+        (term.mkLam "X" (term.mkU 0)
+          (term.mkSigma "s" (term.mkVar 3)
+            (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 0))
+                        (term.mkVar 1))))));
+
+  interpOnRecTm = term.mkLam "D" term.mkDesc
+    (term.mkLam "ih" (term.mkPi "_" (term.mkU 0) (term.mkU 0))
+      (term.mkLam "X" (term.mkU 0)
+        (term.mkSigma "_" (term.mkVar 0)
+          (term.mkApp (term.mkVar 2) (term.mkVar 1)))));
+
+  interpOnPiTm = term.mkLam "S" (term.mkU 0)
+    (term.mkLam "D" term.mkDesc
+      (term.mkLam "ih" (term.mkPi "_" (term.mkU 0) (term.mkU 0))
+        (term.mkLam "X" (term.mkU 0)
+          (term.mkSigma "_" (term.mkPi "_" (term.mkVar 3) (term.mkVar 1))
+            (term.mkApp (term.mkVar 2) (term.mkVar 1))))));
+
+  # interpTm Dtm Xtm : a kernel term that evaluates to `interp Dm X`.
+  # Structurally equal to the term emitted by `interpHoas` in hoas.nix, so
+  # when the outer Desc is stuck (neutral), the motive produced by
+  # `mkAllMotive` below is conv-equal to the motive produced by `allHoas`.
+  interpTm = Dtm: Xtm: term.mkApp
+    (term.mkDescElim interpMotiveTm interpOnRetTm
+      interpOnArgTm interpOnRecTm interpOnPiTm Dtm)
+    Xtm;
+
+  # Motive for All (inductive-hypothesis type):
+  #   λ(Dm:Desc). Π(P : μD' → U). Π(d : ⟦Dm⟧(μD')). U
+  # Matches hoas.nix's `allHoas` motive. Under stuck Dsub the motive is
+  # preserved inside a neutral `desc-elim`, so value-level allTy and
+  # HOAS-level allHoas must carry the same motive for conv to succeed.
+  # Env layout in the closure:
+  #   After vLam applied with Dm:  [Dm, vMu D']  -> Var(0)=Dm, Var(1)=μD'
+  #   Under outer Pi "P" codomain: [P, Dm, vMu D'] -> Var(1)=Dm, Var(2)=μD'
+  mkAllMotive = D': vLam "_" vDesc
+    (mkClosure [ (vMu D') ]
+      (term.mkPi "P"
+        (term.mkPi "_" (term.mkVar 1) (term.mkU 0))
+        (term.mkPi "d"
+          (interpTm (term.mkVar 1) (term.mkVar 2))
+          (term.mkU 0))));
+
+  allTyF = fuel: D': D: P: d:
+    let result = vDescElimF fuel (mkAllMotive D') allOnRet allOnArg allOnRec allOnPi D;
+    in vAppF fuel (vAppF fuel result P) d;
+
+  # -- everywhere computation: everywhere D P ih d (derived from descElim) --
+  # Maps the induction function over recursive positions in the data.
+
+  # evOnRet : λP. λih. λd. tt
+  evOnRet = vLam "P" (vU 0) (mkClosure []
+    (term.mkLam "ih" (term.mkU 0)
+      (term.mkLam "d" term.mkUnit term.mkTt)));
+
+  # evOnArg : λS. λT. λihE. λP. λih. λd. ihE (fst d) P ih (snd d)
+  # Under λS.λT.λihE.λP.λih.λd: env = [d, ih, P, ihE, T, S]
+  evOnArg = vLam "S" (vU 0) (mkClosure []
+    (term.mkLam "T" term.mkDesc
+      (term.mkLam "ihE" term.mkDesc
+        (term.mkLam "P" (term.mkU 0)
+          (term.mkLam "ih" (term.mkU 0)
+            (term.mkLam "d" (term.mkU 0)
+              (term.mkApp
+                (term.mkApp
+                  (term.mkApp
+                    (term.mkApp (term.mkVar 3) (term.mkFst (term.mkVar 0)))
+                    (term.mkVar 2))
+                  (term.mkVar 1))
+                (term.mkSnd (term.mkVar 0)))))))));
+
+  # evOnRec : λD. λihE. λP. λih. λd. (ih (fst d), ihE P ih (snd d))
+  # Under λD.λihE.λP.λih.λd: env = [d, ih, P, ihE, D]
+  evOnRec = vLam "D" vDesc (mkClosure []
+    (term.mkLam "ihE" term.mkDesc
+      (term.mkLam "P" (term.mkU 0)
+        (term.mkLam "ih" (term.mkU 0)
+          (term.mkLam "d" (term.mkU 0)
+            (term.mkPair
+              (term.mkApp (term.mkVar 1) (term.mkFst (term.mkVar 0)))
+              (term.mkApp
+                (term.mkApp
+                  (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                  (term.mkVar 1))
+                (term.mkSnd (term.mkVar 0)))))))));
+
+  # evOnPi : λS. λD. λihE. λP. λih. λd. (λs. ih (fst d s), ihE P ih (snd d))
+  # Under λS.λD.λihE.λP.λih.λd: env = [d, ih, P, ihE, D, S]
+  # Lambda body (under s): env = [s, d, ih, P, ihE, D, S]
+  evOnPi = vLam "S" (vU 0) (mkClosure []
+    (term.mkLam "D" term.mkDesc
+      (term.mkLam "ihE" term.mkDesc
+        (term.mkLam "P" (term.mkU 0)
+          (term.mkLam "ih" (term.mkU 0)
+            (term.mkLam "d" (term.mkU 0)
+              (term.mkPair
+                (term.mkLam "s" (term.mkVar 5)
+                  (term.mkApp (term.mkVar 2)
+                    (term.mkApp (term.mkFst (term.mkVar 1)) (term.mkVar 0))))
+                (term.mkApp
+                  (term.mkApp
+                    (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                    (term.mkVar 1))
+                  (term.mkSnd (term.mkVar 0))))))))));
+
+  mkEvMotive = D': vLam "_" vDesc
+    (mkClosure [vMu D']
+      (term.mkPi "P" (term.mkPi "_" (term.mkVar 0) (term.mkU 0))
+        (term.mkPi "ih" (term.mkPi "_" (term.mkVar 1) (term.mkU 0))
+          (term.mkPi "d" (term.mkU 0) (term.mkU 0)))));
+
+  everywhereF = fuel: D': D: P: ih: d:
+    let result = vDescElimF fuel (mkEvMotive D') evOnRet evOnArg evOnRec evOnPi D;
+    in vAppF fuel (vAppF fuel (vAppF fuel result P) ih) d;
+
   # -- Main evaluator with fuel (§9) --
   evalF = fuel: env: tm:
     if fuel <= 0 then throw "normalization budget exceeded"
@@ -247,6 +542,83 @@ let
       vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
         (ev tm.base) (ev tm.rhs) (ev tm.eq)
 
+    # Descriptions (non-indexed, I = ⊤)
+    else if t == "desc" then vDesc
+    else if t == "desc-ret" then vDescRet
+    else if t == "desc-arg" then vDescArg (ev tm.S) (mkClosure env tm.T)
+    else if t == "desc-rec" then vDescRec (ev tm.D)
+    else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.D)
+    else if t == "mu" then vMu (ev tm.D)
+    # desc-con — trampolined for deep recursive chains (5000+).
+    # Peels a homogeneous desc-con chain along its recursive position. Two
+    # payload shapes are recognized, sharing the outer D by reference:
+    #
+    #   recursive-only: `pair false (pair TAIL tt)`
+    #   recursive+head: `pair false (pair HEAD (pair TAIL tt))`
+    #
+    # Canonical tag and tt subterms in peeled layers are reconstructed with
+    # `V.vFalse` / `V.vTt` without re-evaluation; the outer D and the base
+    # payload are evaluated once, and per-layer heads (for the second shape)
+    # are evaluated once each.
+    else if t == "desc-con" then
+      let
+        peel = node:
+          if node.tag != "desc-con" then null
+          else if node.D != tm.D then null
+          else let d = node.d; in
+            if d.tag != "pair" then null
+            else if d.fst.tag != "false" then null
+            else let inner = d.snd; in
+              if inner.tag != "pair" then null
+              else if inner.snd.tag == "tt" then
+                let rec_ = inner.fst; in
+                if rec_.tag != "desc-con" then null
+                else if rec_.D != tm.D then null
+                else { tail = rec_; heads = [ ]; }
+              else if inner.snd.tag == "pair"
+                   && inner.snd.snd.tag == "tt" then
+                let rec_ = inner.snd.fst; in
+                if rec_.tag != "desc-con" then null
+                else if rec_.D != tm.D then null
+                else { tail = rec_; heads = [ inner.fst ]; }
+              else null;
+        # Integer key is sufficient for dedup. `peel` is O(1) field
+        # inspection into the already-concrete `tm`; no deferred work
+        # accumulates on `val`, so the trampoline.nix deepSeq defense is
+        # unnecessary and would add O(N²) cost through repeated traversal.
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = tm; }];
+          operator = item:
+            let peeled = peel item.val; in
+            if peeled == null then []
+            else [{ key = item.key + 1; val = peeled.tail; }];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in if n > f then throw "normalization budget exceeded"
+      else let
+        dVal = ev tm.D;
+        baseVal = vDescCon dVal (evalF (f - n) env base.d);
+      in builtins.foldl' (acc: i:
+        let
+          layer = (builtins.elemAt chain (n - 1 - i)).val;
+          peeled = peel layer;
+          heads = peeled.heads;
+        in
+        if heads == [ ]
+        then vDescCon dVal (vPair vFalse (vPair acc vTt))
+        else
+          let headVal = evalF (f - n + i) env (builtins.head heads); in
+          vDescCon dVal
+            (vPair vFalse
+              (vPair headVal (vPair acc vTt)))
+      ) baseVal (builtins.genList (x: x) n)
+    else if t == "desc-ind" then
+      vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.scrut)
+    else if t == "desc-elim" then
+      vDescElimF f (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
+        (ev tm.onRec) (ev tm.onPi) (ev tm.scrut)
+
     # Universes
     else if t == "U" then vU tm.level
 
@@ -283,6 +655,11 @@ let
   vNatElim = vNatElimF defaultFuel;
   vListElim = vListElimF defaultFuel;
   vSumElim = vSumElimF defaultFuel;
+  vDescInd = vDescIndF defaultFuel;
+  vDescElim = vDescElimF defaultFuel;
+  interp = interpF defaultFuel;
+  idx = idxF defaultFuel;
+  allTy = allTyF defaultFuel;
 
 in mk {
   doc = ''
@@ -324,7 +701,8 @@ in mk {
   '';
   value = {
     inherit eval evalF instantiate;
-    inherit vApp vFst vSnd vNatElim vBoolElim vListElim vAbsurd vSumElim vJ;
+    inherit vApp vFst vSnd vNatElim vBoolElim vListElim vAbsurd vSumElim vJ vDescInd;
+    inherit vDescElim interp idx allTy;
   };
   tests = let
     T = fx.tc.term;
@@ -595,6 +973,141 @@ in mk {
           (T.mkNil T.mkNat) (builtins.genList (x: x) n);
       in (eval [] (mkList 50)).tag;
       expected = "VCons";
+    };
+
+    # -- Descriptions --
+    "eval-desc" = { expr = (eval [] T.mkDesc).tag; expected = "VDesc"; };
+    "eval-desc-ret" = { expr = (eval [] T.mkDescRet).tag; expected = "VDescRet"; };
+    "eval-desc-arg" = {
+      expr = (eval [] (T.mkDescArg T.mkBool T.mkDescRet)).tag;
+      expected = "VDescArg";
+    };
+    "eval-desc-rec" = {
+      expr = (eval [] (T.mkDescRec T.mkDescRet)).tag;
+      expected = "VDescRec";
+    };
+    "eval-desc-pi" = {
+      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).tag;
+      expected = "VDescPi";
+    };
+    "eval-desc-pi-S" = {
+      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).S.tag;
+      expected = "VBool";
+    };
+    "eval-desc-pi-D" = {
+      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).D.tag;
+      expected = "VDescRet";
+    };
+    "eval-mu" = {
+      expr = (eval [] (T.mkMu T.mkDescRet)).tag;
+      expected = "VMu";
+    };
+    "eval-desc-con" = {
+      expr = (eval [] (T.mkDescCon T.mkDescRet T.mkTt)).tag;
+      expected = "VDescCon";
+    };
+    "eval-desc-ind-stuck" = {
+      # desc-ind on a neutral scrutinee produces VNe
+      expr = (eval [ (freshVar 0) ] (T.mkDescInd T.mkDescRet
+        (T.mkVar 0) (T.mkVar 0) (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- descElim --
+    "eval-desc-elim-ret" = {
+      # descElim on VDescRet returns onRet
+      expr = (eval [] (T.mkDescElim
+        (T.mkLam "_" T.mkDesc (T.mkU 0))
+        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkDescRet)).tag;
+      expected = "VUnit";
+    };
+    "eval-desc-elim-stuck" = {
+      # descElim on a neutral scrutinee produces VNe with EDescElim frame
+      expr = (eval [ (freshVar 0) ] (T.mkDescElim
+        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- interp --
+    "interp-ret" = {
+      # ⟦ret⟧(Nat) = Unit
+      expr = (interpF defaultFuel vDescRet vNat).tag;
+      expected = "VUnit";
+    };
+    "interp-rec-ret" = {
+      # ⟦rec ret⟧(Nat) = Nat × Unit = Σ("_", Nat, Unit)
+      expr = (interpF defaultFuel (vDescRec vDescRet) vNat).tag;
+      expected = "VSigma";
+    };
+    "interp-rec-ret-fst" = {
+      # first component is Nat (= X)
+      expr = (interpF defaultFuel (vDescRec vDescRet) vNat).fst.tag;
+      expected = "VNat";
+    };
+    "interp-pi-ret" = {
+      # ⟦pi Bool ret⟧(Nat) = (Bool→Nat) × Unit
+      expr = (interpF defaultFuel (vDescPi vBool vDescRet) vNat).tag;
+      expected = "VSigma";
+    };
+    "interp-pi-ret-fst" = {
+      # first component is Bool→Nat = VPi
+      expr = (interpF defaultFuel (vDescPi vBool vDescRet) vNat).fst.tag;
+      expected = "VPi";
+    };
+    "interp-pi-ret-fst-domain" = {
+      # Pi domain is Bool
+      expr = (interpF defaultFuel (vDescPi vBool vDescRet) vNat).fst.domain.tag;
+      expected = "VBool";
+    };
+    "interp-arg-ret" = {
+      # ⟦arg Bool (λ_.ret)⟧(Nat) = Σ(s:Bool). Unit
+      expr = (interpF defaultFuel (vDescArg vBool (mkClosure [] T.mkDescRet)) vNat).tag;
+      expected = "VSigma";
+    };
+    "interp-arg-ret-fst" = {
+      # first component is Bool (= S)
+      expr = (interpF defaultFuel (vDescArg vBool (mkClosure [] T.mkDescRet)) vNat).fst.tag;
+      expected = "VBool";
+    };
+    "idx-trivial" = {
+      # idx always returns vTt in Phase 1 (I = ⊤)
+      expr = (idxF defaultFuel vDescRet vTt).tag;
+      expected = "VTt";
+    };
+
+    # -- allTy --
+    "allTy-ret" = {
+      # All ret P d = Unit
+      expr = (allTyF defaultFuel vDescRet vDescRet vNat vTt).tag;
+      expected = "VUnit";
+    };
+    "allTy-rec-ret" = {
+      # All (rec ret) P (x, tt) = P(x) × Unit
+      expr = (allTyF defaultFuel vDescRet (vDescRec vDescRet) vNat
+        (vPair vZero vTt)).tag;
+      expected = "VSigma";
+    };
+
+    # -- ind computation --
+    "eval-desc-ind-ret-con" = {
+      # ind ret (λ_.Nat) (λd ih. 0) (con tt) = 0
+      expr = let
+        D = T.mkDescRet;
+        P = T.mkLam "_" (T.mkMu D) T.mkNat;
+        step = T.mkLam "d" T.mkUnit (T.mkLam "ih" T.mkUnit T.mkZero);
+        scrut = T.mkDescCon D T.mkTt;
+      in (eval [] (T.mkDescInd D P step scrut)).tag;
+      expected = "VZero";
+    };
+    "eval-desc-ind-arg-con" = {
+      # D = arg Bool (λ_.ret), ind D P step (con (false, tt)) = step (false,tt) tt
+      expr = let
+        D = T.mkDescArg T.mkBool T.mkDescRet;
+        P = T.mkLam "_" (T.mkMu D) T.mkNat;
+        step = T.mkLam "d" (T.mkU 0) (T.mkLam "ih" T.mkUnit T.mkZero);
+        scrut = T.mkDescCon D (T.mkPair T.mkFalse T.mkTt);
+      in (eval [] (T.mkDescInd D P step scrut)).tag;
+      expected = "VZero";
     };
 
     # -- §11.3 Stress tests (eval level) --

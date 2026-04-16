@@ -58,6 +58,15 @@ let
   vEq = type: lhs: rhs: { tag = "VEq"; inherit type lhs rhs; };
   vRefl = { tag = "VRefl"; };
 
+  # Descriptions (non-indexed, I = ⊤)
+  vDesc = { tag = "VDesc"; };
+  vDescRet = { tag = "VDescRet"; };
+  vDescArg = S: T: { tag = "VDescArg"; inherit S T; };    # T is a closure S → Desc
+  vDescRec = D: { tag = "VDescRec"; inherit D; };
+  vDescPi = S: D: { tag = "VDescPi"; inherit S D; };    # S and D are plain values (no closure)
+  vMu = D: { tag = "VMu"; inherit D; };
+  vDescCon = D: d: { tag = "VDescCon"; inherit D d; };     # D carried for idx/interp
+
   # Universes
   vU = level: { tag = "VU"; inherit level; };
 
@@ -106,6 +115,10 @@ let
   eJ = type: lhs: motive: base: rhs:
     { tag = "EJ"; inherit type lhs motive base rhs; };
   eStrEq = arg: { tag = "EStrEq"; inherit arg; };
+  eDescInd = D: motive: step:
+    { tag = "EDescInd"; inherit D motive step; };
+  eDescElim = motive: onRet: onArg: onRec: onPi:
+    { tag = "EDescElim"; inherit motive onRet onArg onRec onPi; };
 
 in mk {
   doc = ''
@@ -164,12 +177,13 @@ in mk {
     inherit vVoid;
     inherit vSum vInl vInr;
     inherit vEq vRefl;
+    inherit vDesc vDescRet vDescArg vDescRec vDescPi vMu vDescCon;
     inherit vU;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vOpaqueLam;
     inherit vNe freshVar;
-    inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
+    inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq eDescInd eDescElim;
   };
   tests = {
     # Closures
@@ -247,5 +261,20 @@ in mk {
     "eabsurd-tag" = { expr = (eAbsurd vNat).tag; expected = "EAbsurd"; };
     "esum-elim-tag" = { expr = (eSumElim vNat vBool vNat vZero vZero).tag; expected = "ESumElim"; };
     "ej-tag" = { expr = (eJ vNat vZero vNat vZero vZero).tag; expected = "EJ"; };
+
+    # Descriptions
+    "vdesc-tag" = { expr = vDesc.tag; expected = "VDesc"; };
+    "vdescret-tag" = { expr = vDescRet.tag; expected = "VDescRet"; };
+    "vdescarg-tag" = { expr = (vDescArg vBool (mkClosure [] { tag = "desc-ret"; })).tag; expected = "VDescArg"; };
+    "vdescrec-tag" = { expr = (vDescRec vDescRet).tag; expected = "VDescRec"; };
+    "vdescpi-tag" = { expr = (vDescPi vBool vDescRet).tag; expected = "VDescPi"; };
+    "vdescpi-S" = { expr = (vDescPi vBool vDescRet).S.tag; expected = "VBool"; };
+    "vdescpi-D" = { expr = (vDescPi vBool vDescRet).D.tag; expected = "VDescRet"; };
+    "vmu-tag" = { expr = (vMu vDescRet).tag; expected = "VMu"; };
+    "vmu-D" = { expr = (vMu vDescRet).D.tag; expected = "VDescRet"; };
+    "vdesccon-tag" = { expr = (vDescCon vDescRet vTt).tag; expected = "VDescCon"; };
+    "vdesccon-D" = { expr = (vDescCon vDescRet vTt).D.tag; expected = "VDescRet"; };
+    "edescind-tag" = { expr = (eDescInd vDescRet vNat vZero).tag; expected = "EDescInd"; };
+    "edescelim-tag" = { expr = (eDescElim vNat vZero vZero vZero vZero).tag; expected = "EDescElim"; };
   };
 }

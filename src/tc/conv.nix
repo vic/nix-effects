@@ -3,7 +3,8 @@
 # conv : Depth -> Val -> Val -> Bool
 # Checks definitional equality of two values at binding depth d.
 # Purely structural on normalized values — no type information used.
-# No eta expansion. Cumulativity handled in check.nix Sub rule only.
+# Sigma-eta (⟨fst x, snd x⟩ ≡ x) and unit-eta (x ≡ tt for x : ⊤) ARE
+# implemented; Pi-eta is NOT. Cumulativity handled in check.nix Sub rule only.
 # Pure function — zero effect system imports.
 #
 # Spec reference: kernel-spec.md §6
@@ -73,6 +74,20 @@ let
     # §6.3 Compound values
     else if t1 == "VPair" && t2 == "VPair" then
       conv d v1.fst v2.fst && conv d v1.snd v2.snd
+    # §6.3a Sigma-eta: ⟨fst x, snd x⟩ ≡ x for a neutral x.
+    # The rule only fires against a neutral RHS: concrete non-pair values
+    # of other types (VLam, VU, VZero, ...) cannot convert with a VPair,
+    # so matching them against a VPair harmlessly falls through to `false`.
+    else if t1 == "VPair" && t2 == "VNe" then
+      conv d v1.fst (E.vFst v2) && conv d v1.snd (E.vSnd v2)
+    else if t1 == "VNe" && t2 == "VPair" then
+      conv d (E.vFst v1) v2.fst && conv d (E.vSnd v1) v2.snd
+    # §6.3b Unit-eta: any inhabitant of ⊤ is ≡ tt. In the type-free conv,
+    # VTt vs VNe is sound because conv is always called on values of a
+    # shared type; if one side is VTt, that shared type is ⊤ and the VNe's
+    # only inhabitant is tt.
+    else if t1 == "VTt" && t2 == "VNe" then true
+    else if t1 == "VNe" && t2 == "VTt" then true
     else if t1 == "VList" && t2 == "VList" then conv d v1.elem v2.elem
     else if t1 == "VNil" && t2 == "VNil" then conv d v1.elem v2.elem
     # VCons — trampolined: peel tails iteratively, check elem+head per level
@@ -102,6 +117,20 @@ let
       conv d v1.left v2.left && conv d v1.right v2.right && conv d v1.val v2.val
     else if t1 == "VEq" && t2 == "VEq" then
       conv d v1.type v2.type && conv d v1.lhs v2.lhs && conv d v1.rhs v2.rhs
+
+    # Descriptions
+    else if t1 == "VDesc" && t2 == "VDesc" then true
+    else if t1 == "VDescRet" && t2 == "VDescRet" then true
+    else if t1 == "VDescArg" && t2 == "VDescArg" then
+      conv d v1.S v2.S
+      && conv (d + 1) (E.instantiate v1.T (V.freshVar d))
+                      (E.instantiate v2.T (V.freshVar d))
+    else if t1 == "VDescRec" && t2 == "VDescRec" then conv d v1.D v2.D
+    else if t1 == "VDescPi" && t2 == "VDescPi" then
+      conv d v1.S v2.S && conv d v1.D v2.D
+    else if t1 == "VMu" && t2 == "VMu" then conv d v1.D v2.D
+    else if t1 == "VDescCon" && t2 == "VDescCon" then
+      conv d v1.D v2.D && conv d v1.d v2.d
 
     # Opaque lambda: identity on _fnBox (Nix attrset thunk identity) + structural piTy
     else if t1 == "VOpaqueLam" && t2 == "VOpaqueLam" then
@@ -147,6 +176,12 @@ let
       && conv d e1.motive e2.motive && conv d e1.base e2.base
       && conv d e1.rhs e2.rhs
     else if t1 == "EStrEq" then conv d e1.arg e2.arg
+    else if t1 == "EDescInd" then
+      conv d e1.D e2.D && conv d e1.motive e2.motive && conv d e1.step e2.step
+    else if t1 == "EDescElim" then
+      conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
+      && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
+      && conv d e1.onPi e2.onPi
     else false;
 
 in mk {
@@ -423,12 +458,118 @@ in mk {
       expected = true;
     };
 
-    # No eta — f and λx.f(x) are NOT definitionally equal (§6.5)
+    # No pi-eta — f and λx.f(x) are NOT definitionally equal (§6.5)
     # freshVar(0) is a neutral, VLam wrapping App(freshVar(0), freshVar(1)) is its eta-expansion
     "conv-no-eta-lam" = {
       expr = conv 1
         (V.freshVar 0)
         (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))));
+      expected = false;
+    };
+
+    # §6.3a Sigma-eta: ⟨fst x, snd x⟩ ≡ x for neutral x
+    "conv-sigma-eta-pair-vs-neutral" = {
+      expr = let x = V.freshVar 0; in
+        conv 1 (vPair (E.vFst x) (E.vSnd x)) x;
+      expected = true;
+    };
+    "conv-sigma-eta-neutral-vs-pair" = {
+      expr = let x = V.freshVar 0; in
+        conv 1 x (vPair (E.vFst x) (E.vSnd x));
+      expected = true;
+    };
+    # Counter-example: fst and snd of DIFFERENT neutrals is NOT sigma-eta on a single x
+    "conv-sigma-eta-distinct-neutrals-rejected" = {
+      expr = let x = V.freshVar 0; y = V.freshVar 1; in
+        conv 2 (vPair (E.vFst x) (E.vSnd y)) x;
+      expected = false;
+    };
+    # Counter-example: comparing a pair against a non-Sigma-typed neutral (e.g. a
+    # nat-valued neutral) should fail: VPair components won't conv with vFst/vSnd
+    # spine extensions on a neutral whose existing spine is nat-indexed, because
+    # the `a ≡ vFst v2` sub-conv returns false structurally.
+    "conv-sigma-eta-unrelated-values-rejected" = {
+      expr = conv 0 (vPair vZero vTrue) (V.freshVar 0);
+      # freshVar 0 is a bare VNe with empty spine; vFst (VNe 0 []) = VNe 0 [EFst],
+      # structural-conv with VZero returns false.
+      expected = false;
+    };
+
+    # §6.3b Unit-eta: x ≡ tt for neutral x : ⊤
+    "conv-unit-eta-tt-vs-neutral" = {
+      expr = conv 1 vTt (V.freshVar 0);
+      expected = true;
+    };
+    "conv-unit-eta-neutral-vs-tt" = {
+      expr = conv 1 (V.freshVar 0) vTt;
+      expected = true;
+    };
+
+    # Descriptions
+    "conv-desc" = { expr = conv 0 V.vDesc V.vDesc; expected = true; };
+    "conv-descret" = { expr = conv 0 V.vDescRet V.vDescRet; expected = true; };
+    "conv-descarg" = {
+      expr = conv 0
+        (V.vDescArg vBool (mkClosure [] T.mkDescRet))
+        (V.vDescArg vBool (mkClosure [] T.mkDescRet));
+      expected = true;
+    };
+    "conv-descarg-diff-S" = {
+      expr = conv 0
+        (V.vDescArg vBool (mkClosure [] T.mkDescRet))
+        (V.vDescArg vNat (mkClosure [] T.mkDescRet));
+      expected = false;
+    };
+    "conv-descrec" = {
+      expr = conv 0 (V.vDescRec V.vDescRet) (V.vDescRec V.vDescRet);
+      expected = true;
+    };
+    "conv-descpi" = {
+      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vBool V.vDescRet);
+      expected = true;
+    };
+    "conv-descpi-diff-S" = {
+      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vNat V.vDescRet);
+      expected = false;
+    };
+    "conv-descpi-diff-D" = {
+      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vBool (V.vDescRec V.vDescRet));
+      expected = false;
+    };
+    "conv-mu" = {
+      expr = conv 0 (V.vMu V.vDescRet) (V.vMu V.vDescRet);
+      expected = true;
+    };
+    "conv-mu-diff" = {
+      expr = conv 0 (V.vMu V.vDescRet) (V.vMu (V.vDescRec V.vDescRet));
+      expected = false;
+    };
+    "conv-desccon" = {
+      expr = conv 0 (V.vDescCon V.vDescRet vTt) (V.vDescCon V.vDescRet vTt);
+      expected = true;
+    };
+    "conv-ne-desc-ind" = {
+      expr = conv 1
+        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ])
+        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ]);
+      expected = true;
+    };
+    "conv-ne-desc-ind-diff" = {
+      expr = conv 1
+        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ])
+        (vNe 0 [ (V.eDescInd V.vDescRet vBool vZero) ]);
+      expected = false;
+    };
+    "conv-ne-desc-elim" = {
+      expr = conv 1
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ]);
+      expected = true;
+    };
+    "conv-ne-desc-elim-diff" = {
+      expr = conv 1
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim vBool vZero vZero vZero vZero) ]);
       expected = false;
     };
 

@@ -667,6 +667,15 @@ conv(d, VSigma(_, A₁, cl₁), VSigma(_, A₂, cl₂)) =
 conv(d, VPair(a₁, b₁), VPair(a₂, b₂)) =
   conv(d, a₁, a₂) ∧ conv(d, b₁, b₂)
 
+conv(d, VPair(a, b), VNe(l, sp)) =
+  conv(d, a, vFst(VNe(l, sp))) ∧ conv(d, b, vSnd(VNe(l, sp)))    -- Σ-η
+
+conv(d, VNe(l, sp), VPair(a, b)) =
+  conv(d, vFst(VNe(l, sp)), a) ∧ conv(d, vSnd(VNe(l, sp)), b)    -- Σ-η
+
+conv(d, VTt, VNe(_, _)) = true                                    -- ⊤-η
+conv(d, VNe(_, _), VTt) = true                                    -- ⊤-η
+
 conv(d, VList(A₁),        VList(A₂))        = conv(d, A₁, A₂)
 conv(d, VNil(A₁),         VNil(A₂))         = conv(d, A₁, A₂)
 conv(d, VCons(A₁, h₁, t₁), VCons(A₂, h₂, t₂)) =
@@ -718,8 +727,14 @@ conv(d, _, _) = false
 ```
 
 Any pair of values not matching the above rules is not definitionally
-equal. **No eta expansion.** If `f` and `λx. f x` must be compared,
-the elaborator must eta-expand `f` before submitting to the kernel.
+equal. **No Pi-eta**: `f` and `λx. f x` are NOT equated; if the
+elaborator needs them equal, it must eta-expand `f` before submitting
+to the kernel. **Σ-eta and ⊤-eta are applied** (see §6.3): a pair
+`⟨a, b⟩` converts against a neutral `x : Σ` by projecting both sides,
+and any neutral of type `⊤` converts against `tt`. Σ-eta and ⊤-eta are
+sound in the type-free conv because conv is always called on two values
+sharing a type — the neutral's shape (Σ or ⊤) is witnessed by the
+non-neutral side.
 
 ---
 

@@ -29,6 +29,7 @@ let
   inherit (api) mk;
   H = fx.tc.hoas;
   E = fx.tc.eval;
+  V = fx.tc.value;
 
   # -- Detection predicates for fx.types structural dispatch --
 
@@ -433,6 +434,26 @@ let
       H.forall tyVal.name (reifyType tyVal.domain)
         (x: reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
     else if t == "VU" then H.u tyVal.level
+    # VMu D — description-based prelude types. The three prelude descriptions
+    # share the outer shape `descArg bool (b: boolElim ... onTrue onFalse b)`.
+    # Dispatch structurally on the sub-descriptions at vTrue / vFalse:
+    #   natDesc:      subT = VDescRet;           subF = VDescRec VDescRet
+    #   listDesc e:   subT = VDescRet;           subF = VDescArg e (_: …)
+    #   sumDesc l r:  subT = VDescArg l (_: …);  subF = VDescArg r (_: …)
+    # User-defined descriptions fall through to the throw.
+    else if t == "VMu" then
+      let D = tyVal.D; in
+      if D.tag != "VDescArg"
+      then throw "reifyType: unsupported VMu description (D.tag=${D.tag})"
+      else
+        let subT = E.instantiate D.T V.vTrue;
+            subF = E.instantiate D.T V.vFalse; in
+        if subT.tag == "VDescRet" && subF.tag == "VDescRec" then H.nat
+        else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+        then H.listOf (reifyType subF.S)
+        else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+        then H.sum (reifyType subT.S) (reifyType subF.S)
+        else throw "reifyType: unsupported VMu description (subT=${subT.tag}, subF=${subF.tag})"
     else throw "reifyType: unsupported value tag '${t}'";
 
   # -- Value extraction (internal) --
@@ -444,20 +465,36 @@ let
   extractInner = hoasTy: tyVal: val:
     let t = hoasTy._htag or (throw "extract: not an HOAS type"); in
 
-    # Nat: VZero → 0, VSucc^n(VZero) → n
-    # Trampolined via genericClosure for stack safety on large nats
+    # Nat: base → 0, succ^n(base) → n. H.nat elaborates to μnatDesc, so every
+    # value of type Nat arrives as a VDescCon chain:
+    #   zero:   VDescCon natDesc (VPair VTrue VTt)
+    #   succ p: VDescCon natDesc (VPair VFalse (VPair p VTt))
+    # Trampolined via genericClosure for stack safety on large nats. The
+    # operator does O(1) field projection on a concrete value; no deferred
+    # continuation work accumulates, so the integer key suffices for dedup
+    # and deepSeq-in-key would add O(N²) cost.
     if t == "nat" then
       let
+        isDescSucc = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VFalse"
+          && v.d.snd.tag == "VPair";
+        isDescZero = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VTrue";
         chain = builtins.genericClosure {
           startSet = [{ key = 0; inherit val; }];
           operator = item:
-            if item.val.tag == "VSucc"
-            then [{ key = item.key + 1; val = item.val.pred; }]
+            if isDescSucc item.val
+            then [{ key = item.key + 1; val = item.val.d.snd.fst; }]
             else [];
         };
         last = builtins.elemAt chain (builtins.length chain - 1);
       in
-        if last.val.tag == "VZero" then builtins.length chain - 1
+        if isDescZero last.val
+        then builtins.length chain - 1
         else throw "extract: Nat value is not a numeral (stuck at ${last.val.tag})"
 
     else if t == "bool" then
@@ -494,29 +531,78 @@ let
       throw "extract: Any is opaque — kernel does not store original value"
 
     else if t == "list" then
-      # VNil → [], VCons(h,t) → [extract(h)] ++ rest
-      # Trampolined via genericClosure for stack safety on large lists
+      # H.listOf elem elaborates to μ(listDesc elem), so every value of type
+      # List arrives as a VDescCon chain:
+      #   nil:       VDescCon D (VPair VTrue VTt)
+      #   cons h t:  VDescCon D (VPair VFalse (VPair h (VPair t VTt)))
+      # elemTyVal is recovered from the outer description by instantiating D
+      # at vFalse: D = VDescArg bool T, T vFalse = descArg elem (_: descRec descRet),
+      # whose .S is elem. Trampolined via genericClosure for stack safety.
       let
         elemTy = hoasTy.elem;
+        isDescCons = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VFalse"
+          && v.d.snd.tag == "VPair"
+          && v.d.snd.snd.tag == "VPair";
+        isDescNil = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VTrue";
+        elemTyVal =
+          if tyVal.tag == "VMu" && tyVal.D.tag == "VDescArg" then
+            let subFalse = E.instantiate tyVal.D.T V.vFalse; in
+            if subFalse.tag == "VDescArg" then subFalse.S
+            else throw "extract: list tyVal has non-list description (sub-false=${subFalse.tag})"
+          else throw "extract: list tyVal must be VMu(listDesc), got ${tyVal.tag}";
         chain = builtins.genericClosure {
           startSet = [{ key = 0; inherit val; }];
           operator = item:
-            if item.val.tag == "VCons"
-            then [{ key = item.key + 1; val = item.val.tail; }]
+            if isDescCons item.val
+            then [{ key = item.key + 1; val = item.val.d.snd.snd.fst; }]
             else [];
         };
         n = builtins.length chain;
         last = builtins.elemAt chain (n - 1);
       in
-        if last.val.tag != "VNil"
+        if !(isDescNil last.val)
         then throw "extract: List is not a proper cons/nil chain (stuck at ${last.val.tag})"
         else builtins.genList (i:
-          extractInner elemTy tyVal.elem (builtins.elemAt chain i).val.head
+          let item = (builtins.elemAt chain i).val; in
+          extractInner elemTy elemTyVal item.d.snd.fst
         ) (n - 1)
 
     else if t == "sum" then
-      if val.tag == "VInl" then { _tag = "Left"; value = extractInner hoasTy.left tyVal.left val.val; }
-      else if val.tag == "VInr" then { _tag = "Right"; value = extractInner hoasTy.right tyVal.right val.val; }
+      # H.sum l r elaborates to μ(sumDesc l r), so every value of type Sum
+      # arrives as a single-layer VDescCon:
+      #   inl a: VDescCon D (VPair VTrue  (VPair a VTt))
+      #   inr b: VDescCon D (VPair VFalse (VPair b VTt))
+      # Branch element type is recovered from D by instantiating at vTrue /
+      # vFalse: each yields VDescArg l/r (_: descRet), whose .S is the arm.
+      let
+        isDescInl = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VTrue"
+          && v.d.snd.tag == "VPair";
+        isDescInr = v:
+          v.tag == "VDescCon"
+          && v.d.tag == "VPair"
+          && v.d.fst.tag == "VFalse"
+          && v.d.snd.tag == "VPair";
+        armTy = tag:
+          if tyVal.tag == "VMu" && tyVal.D.tag == "VDescArg" then
+            let sub = E.instantiate tyVal.D.T
+                        (if tag == "VTrue" then V.vTrue else V.vFalse); in
+            if sub.tag == "VDescArg" then sub.S
+            else throw "extract: sum tyVal has non-sum description (sub-${tag}=${sub.tag})"
+          else throw "extract: sum tyVal must be VMu(sumDesc), got ${tyVal.tag}";
+      in
+      if isDescInl val then
+        { _tag = "Left"; value = extractInner hoasTy.left (armTy "VTrue") val.d.snd.fst; }
+      else if isDescInr val then
+        { _tag = "Right"; value = extractInner hoasTy.right (armTy "VFalse") val.d.snd.fst; }
       else throw "extract: Sum value is neither inl nor inr (got ${val.tag})"
 
     else if t == "sigma" then
@@ -801,32 +887,34 @@ in mk {
       expected = "false";
     };
     "elab-val-zero" = {
-      expr = (H.elab (elaborateValue H.nat 0)).tag;
-      expected = "zero";
+      expr = let e = H.elab (elaborateValue H.nat 0); in "${e.tag}/${e.d.fst.tag}";
+      expected = "desc-con/true";
     };
     "elab-val-nat-3" = {
-      expr = (H.elab (elaborateValue H.nat 3)).tag;
-      expected = "succ";
+      expr = let e = H.elab (elaborateValue H.nat 3); in "${e.tag}/${e.d.fst.tag}";
+      expected = "desc-con/false";
     };
     "elab-val-unit" = {
       expr = (H.elab (elaborateValue H.unit null)).tag;
       expected = "tt";
     };
     "elab-val-nil" = {
-      expr = (H.elab (elaborateValue (H.listOf H.nat) [])).tag;
-      expected = "nil";
+      expr = let t = H.elab (elaborateValue (H.listOf H.nat) []); in "${t.tag}/${t.d.fst.tag}";
+      expected = "desc-con/true";
     };
     "elab-val-cons" = {
-      expr = (H.elab (elaborateValue (H.listOf H.nat) [0 1])).tag;
-      expected = "cons";
+      expr = let t = H.elab (elaborateValue (H.listOf H.nat) [0 1]); in "${t.tag}/${t.d.fst.tag}";
+      expected = "desc-con/false";
     };
     "elab-val-inl" = {
-      expr = (H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Left"; value = 0; })).tag;
-      expected = "inl";
+      expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Left"; value = 0; }); in
+        "${t.tag}/${t.d.fst.tag}";
+      expected = "desc-con/true";
     };
     "elab-val-inr" = {
-      expr = (H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Right"; value = true; })).tag;
-      expected = "inr";
+      expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Right"; value = true; }); in
+        "${t.tag}/${t.d.fst.tag}";
+      expected = "desc-con/false";
     };
     "elab-val-pair" = {
       expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.bool)) { fst = 0; snd = true; })).tag;
@@ -927,12 +1015,24 @@ in mk {
       expected = true;
     };
 
-    # Stack safety: decide on large list (buildList + HOAS elab both trampolined)
-    # Note: eval/check still recurse on cons chains, limiting full-pipeline depth.
-    # The HOAS layer itself handles 5000+ (see hoas.nix elab-cons-5000 test).
-    # Stack safety: full pipeline (elaborate → eval → check) trampolined for cons
+    # Stack safety: full pipeline (elaborate → eval → check) trampolined for cons.
+    # Elements are all `0` (Peano depth 1) to isolate the cons-chain stressor —
+    # matches the convention of the four sibling "5000" stress tests in
+    # hoas/check/conv/quote. Under μnatDesc, `natLit k` is O(k) Peano depth by
+    # design, so varying-magnitude elements would conflate two orthogonal
+    # stressors. See `decide-nat-1000` below for the dedicated Peano-depth test.
     "decide-list-5000" = {
-      expr = decide (H.listOf H.nat) (builtins.genList (x: x) 5000);
+      expr = decide (H.listOf H.nat) (builtins.genList (_: 0) 5000);
+      expected = true;
+    };
+
+    # Stack safety: full pipeline on a deep Peano literal. Under μnatDesc
+    # representation `natLit N` is an N-deep desc-con chain; this test exercises
+    # the desc-con trampolines in elaborate/check/eval end-to-end. Bound chosen
+    # so the test stays well under a second on commodity hardware — higher
+    # bounds are meaningful but dominated by memory allocation, not correctness.
+    "decide-nat-1000" = {
+      expr = decide H.nat 1000;
       expected = true;
     };
 

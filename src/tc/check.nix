@@ -202,6 +202,100 @@ let
             (Q.quote ctx.depth ty.domain) (Q.quote ctx.depth piTyVal.domain) tm
         else pure (T.mkOpaqueLam tm._fnBox piTyTm))
 
+    # desc-con checked against Mu — trampolined for deep recursive data (5000+).
+    # Peels a homogeneous desc-con chain along its single recursive position.
+    # Two payload shapes are recognized, both along the same D (reference-
+    # identity; elaborate emits a shared D term per chain):
+    #
+    #   recursive-only: `pair false (pair TAIL tt)`
+    #   recursive+head: `pair false (pair HEAD (pair TAIL tt))`
+    #
+    # For the second shape the per-layer HEAD is type-checked against elemVal,
+    # obtained by instantiating D's outer closure at vFalse: if the resulting
+    # sub-description is `VDescArg elem (…)`, elem is the element type; if it
+    # is `VDescRec …` (recursive-only shape) the instantiation yields null
+    # and per-layer head checks are skipped.
+    else if t == "desc-con" && ty.tag == "VMu" then
+      bind (check ctx tm.D V.vDesc) (dTm:
+        let dVal = E.eval ctx.env dTm; in
+        if !(C.conv ctx.depth dVal ty.D)
+        then typeError "desc-con description mismatch"
+          (Q.quote ctx.depth ty.D) (Q.quote ctx.depth dVal) tm
+        else
+          let
+            # peel : Tm → null | { tail : Tm; heads : [Tm]; }
+            # heads = []   for recursive-only shape
+            # heads = [h]  for recursive+head shape (the per-layer element)
+            peel = node:
+              if node.tag != "desc-con" then null
+              else if node.D != tm.D then null
+              else let d = node.d; in
+                if d.tag != "pair" then null
+                else if d.fst.tag != "false" then null
+                else let inner = d.snd; in
+                  if inner.tag != "pair" then null
+                  else if inner.snd.tag == "tt" then
+                    # Nat shape: pair false (pair REC tt)
+                    let rec_ = inner.fst; in
+                    if rec_.tag != "desc-con" then null
+                    else if rec_.D != tm.D then null
+                    else { tail = rec_; heads = [ ]; }
+                  else if inner.snd.tag == "pair"
+                       && inner.snd.snd.tag == "tt" then
+                    # List shape: pair false (pair HEAD (pair REC tt))
+                    let rec_ = inner.snd.fst; in
+                    if rec_.tag != "desc-con" then null
+                    else if rec_.D != tm.D then null
+                    else { tail = rec_; heads = [ inner.fst ]; }
+                  else null;
+            # Integer key is sufficient for genericClosure dedup. `peel` is
+            # O(1) field inspection returning a reference to an existing sub-Tm
+            # of the concrete `tm`; no deferred continuation work accumulates
+            # across steps, so the deepSeq-in-key defensive pattern from
+            # fx/trampoline.nix is not needed here and would add O(N²) cost.
+            chain = builtins.genericClosure {
+              startSet = [{ key = 0; val = tm; }];
+              operator = item:
+                let peeled = peel item.val; in
+                if peeled == null then []
+                else [{ key = item.key + 1; val = peeled.tail; }];
+            };
+            n = builtins.length chain - 1;
+            base = (builtins.elemAt chain n).val;
+            interpTy = E.interp ty.D (V.vMu ty.D);
+            # Extract elemVal from D when the false-branch sub-description is
+            # `VDescArg elem (…)`. For nat-shape D (false-branch = VDescRec)
+            # this yields null and per-layer head checks are skipped.
+            elemVal =
+              if ty.D.tag != "VDescArg" then null
+              else let subFalse = E.instantiate ty.D.T V.vFalse; in
+                if subFalse.tag != "VDescArg" then null
+                else subFalse.S;
+          in bind (check ctx base.d interpTy) (baseDataTm:
+            let baseTm = T.mkDescCon dTm baseDataTm; in
+            builtins.foldl' (accComp: i:
+              let
+                layer = (builtins.elemAt chain (n - 1 - i)).val;
+                peeled = peel layer;
+                heads = peeled.heads;
+              in
+              if heads == [ ] then
+                # Nat shape: canonical false + tt, no per-layer check.
+                bind accComp (acc:
+                  pure (T.mkDescCon dTm
+                    (T.mkPair T.mkFalse (T.mkPair acc T.mkTt))))
+              else
+                # List shape: check the per-layer head against elemVal.
+                # elemVal is guaranteed non-null here because the peel
+                # returned a list-shape payload only when D's sub-false
+                # branch is VDescArg (same predicate that yields elemVal).
+                bind accComp (acc:
+                  bind (check ctx (builtins.head heads) elemVal) (hTm':
+                    pure (T.mkDescCon dTm
+                      (T.mkPair T.mkFalse
+                        (T.mkPair hTm' (T.mkPair acc T.mkTt))))))
+            ) (pure baseTm) (builtins.genList (x: x) n)))
+
     # Sub rule: fall through to synthesis (§7.4 Sub)
     else
       bind (infer ctx tm) (result:
@@ -409,6 +503,85 @@ let
     else if t == "path" then pure { term = T.mkPath; type = V.vU 0; }
     else if t == "function" then pure { term = T.mkFunction; type = V.vU 0; }
     else if t == "any" then pure { term = T.mkAny; type = V.vU 0; }
+    else if t == "desc" then pure { term = T.mkDesc; type = V.vU 1; }
+
+    else if t == "desc-ret" then
+      pure { term = T.mkDescRet; type = V.vDesc; }
+
+    else if t == "desc-arg" then
+      bind (check ctx tm.S (V.vU 0)) (sTm:
+        let sVal = E.eval ctx.env sTm;
+            ctx' = extend ctx "_" sVal;
+        in bind (check ctx' tm.T V.vDesc) (tTm:
+          pure { term = T.mkDescArg sTm tTm; type = V.vDesc; }))
+
+    else if t == "desc-rec" then
+      bind (check ctx tm.D V.vDesc) (dTm:
+        pure { term = T.mkDescRec dTm; type = V.vDesc; })
+
+    else if t == "desc-pi" then
+      bind (check ctx tm.S (V.vU 0)) (sTm:
+        bind (check ctx tm.D V.vDesc) (dTm:
+          pure { term = T.mkDescPi sTm dTm; type = V.vDesc; }))
+
+    else if t == "desc-con" then
+      bind (check ctx tm.D V.vDesc) (dTm:
+        let dVal = E.eval ctx.env dTm;
+            interpTy = E.interp dVal (V.vMu dVal);
+        in bind (check ctx tm.d interpTy) (dataTm:
+          pure { term = T.mkDescCon dTm dataTm; type = V.vMu dVal; }))
+
+    else if t == "desc-elim" then
+      bind (checkMotive ctx tm.motive V.vDesc) (pTm:
+        let pVal = E.eval ctx.env pTm;
+            prTy = E.vApp pVal V.vDescRet;
+            pQ1 = Q.quote (ctx.depth + 1) pVal;
+            pQ2 = Q.quote (ctx.depth + 2) pVal;
+            pQ3 = Q.quote (ctx.depth + 3) pVal;
+            # pa : Π(S:U(0)). Π(T:S→Desc). (Π(s:S). P(T s)) → P(arg S T)
+            paTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
+              (T.mkPi "T" (T.mkPi "_" (T.mkVar 0) T.mkDesc)
+                (T.mkPi "ih" (T.mkPi "s" (T.mkVar 1)
+                    (T.mkApp pQ3 (T.mkApp (T.mkVar 1) (T.mkVar 0))))
+                  (T.mkApp pQ3
+                    (T.mkDescArg (T.mkVar 2) (T.mkApp (T.mkVar 2) (T.mkVar 0)))))));
+            # pe : Π(D:Desc). P D → P(rec D)
+            peTy = V.vPi "D" V.vDesc (V.mkClosure ctx.env
+              (T.mkPi "ih" (T.mkApp pQ1 (T.mkVar 0))
+                (T.mkApp pQ2 (T.mkDescRec (T.mkVar 1)))));
+            # pp : Π(S:U(0)). Π(D:Desc). P D → P(pi S D)
+            ppTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
+              (T.mkPi "D" T.mkDesc
+                (T.mkPi "ih" (T.mkApp pQ2 (T.mkVar 0))
+                  (T.mkApp pQ3 (T.mkDescPi (T.mkVar 2) (T.mkVar 1))))));
+        in bind (check ctx tm.onRet prTy) (prTm:
+          bind (check ctx tm.onArg paTy) (paTm:
+            bind (check ctx tm.onRec peTy) (peTm:
+              bind (check ctx tm.onPi ppTy) (ppTm:
+                bind (check ctx tm.scrut V.vDesc) (sTm:
+                  let retTy = E.vApp pVal (E.eval ctx.env sTm); in
+                  pure { term = T.mkDescElim pTm prTm paTm peTm ppTm sTm;
+                         type = retTy; }))))))
+
+    else if t == "desc-ind" then
+      bind (check ctx tm.D V.vDesc) (dTm:
+        let dVal = E.eval ctx.env dTm;
+        in bind (checkMotive ctx tm.motive (V.vMu dVal)) (pTm:
+          let
+            pVal = E.eval ctx.env pTm;
+            interpTy = E.interp dVal (V.vMu dVal);
+            # step : Π(d : ⟦D⟧(μ D)). All D P d → P(con d)
+            # Compute allTy and retTy on a fresh variable for d
+            dVar = V.freshVar ctx.depth;
+            allTyVal = E.allTy dVal dVal pVal dVar;
+            retTyVal = E.vApp pVal (V.vDescCon dVal dVar);
+            stepTy = V.vPi "d" interpTy (V.mkClosure ctx.env
+              (T.mkPi "_" (Q.quote (ctx.depth + 1) allTyVal)
+                (Q.quote (ctx.depth + 2) retTyVal)));
+          in bind (check ctx tm.step stepTy) (sTm:
+            bind (check ctx tm.scrut (V.vMu dVal)) (xTm:
+              let retTy = E.vApp pVal (E.eval ctx.env xTm); in
+              pure { term = T.mkDescInd dTm pTm sTm xTm; type = retTy; }))))
 
     # Primitive literals infer their types
     else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }
@@ -434,7 +607,7 @@ let
         bind (check ctx tm.rhs V.vString) (rhsTm:
           pure { term = T.mkStrEq lhsTm rhsTm; type = V.vBool; }))
 
-    else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" then
+    else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" || t == "mu" then
       bind (checkTypeLevel ctx tm) (r:
         pure { term = r.term; type = V.vU r.level; })
 
@@ -485,6 +658,10 @@ let
         bind (check ctx tm.lhs aVal) (lTm:
           bind (check ctx tm.rhs aVal) (rTm:
             pure { term = T.mkEq ar.term lTm rTm; level = ar.level; })))
+    else if t == "desc" then pure { term = T.mkDesc; level = 1; }
+    else if t == "mu" then
+      bind (check ctx tm.D V.vDesc) (dTm:
+        pure { term = T.mkMu dTm; level = 0; })
     # Fallback: infer and check it's a universe, extract level
     else
       bind (infer ctx tm) (result:
@@ -563,7 +740,8 @@ in mk {
   tests = let
     inherit (V) vNat vZero vSucc vBool vPi vSigma
       vList vUnit vVoid vSum vEq vU mkClosure
-      vString vInt vFloat vAttrs vPath vFunction vAny;
+      vString vInt vFloat vAttrs vPath vFunction vAny
+      vDesc vDescRet vMu;
 
     # Shorthand
     ctx0 = emptyCtx;
@@ -1595,6 +1773,105 @@ in mk {
     "roundtrip-any-lit" = {
       expr = Q.nf [] (Q.nf [] T.mkAnyLit) == Q.nf [] T.mkAnyLit;
       expected = true;
+    };
+
+    # -- Desc type checking tests --
+
+    "infer-desc-ret" = {
+      expr = (inferTm ctx0 T.mkDescRet).type.tag;
+      expected = "VDesc";
+    };
+
+    "infer-desc-arg" = {
+      expr = (inferTm ctx0 (T.mkDescArg T.mkBool T.mkDescRet)).type.tag;
+      expected = "VDesc";
+    };
+
+    "infer-desc-rec" = {
+      expr = (inferTm ctx0 (T.mkDescRec T.mkDescRet)).type.tag;
+      expected = "VDesc";
+    };
+
+    "infer-desc-pi" = {
+      expr = (inferTm ctx0 (T.mkDescPi T.mkBool T.mkDescRet)).type.tag;
+      expected = "VDesc";
+    };
+
+    "infer-mu" = {
+      expr = (inferTm ctx0 (T.mkMu T.mkDescRet)).type.level;
+      expected = 0;
+    };
+
+    "checktype-desc" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkDesc)).level;
+      expected = 1;
+    };
+
+    "checktype-mu" = {
+      expr = (runCheck (checkTypeLevel ctx0 (T.mkMu T.mkDescRet))).level;
+      expected = 0;
+    };
+
+    # con ret tt : μ ret  (interp(ret, μ ret) = Unit, tt : Unit)
+    "infer-desc-con" = {
+      expr = (inferTm ctx0 (T.mkDescCon T.mkDescRet T.mkTt)).type.tag;
+      expected = "VMu";
+    };
+
+    # check mode: con ret tt against μ ret
+    "check-desc-con" = {
+      expr = (checkTm ctx0 (T.mkDescCon T.mkDescRet T.mkTt) (vMu vDescRet)).tag;
+      expected = "desc-con";
+    };
+
+    # descElim (λ_.U(0)) Unit (λS.λT.λih.Unit) (λD.λih.Unit) (λS.λD.λih.Unit) ret
+    # returns P(ret) = U(0)
+    "infer-desc-elim-ret" = {
+      expr = (inferTm ctx0 (T.mkDescElim
+        (T.mkLam "_" T.mkDesc (T.mkU 0))
+        T.mkUnit
+        (T.mkLam "S" (T.mkU 0) (T.mkLam "T" (T.mkPi "_" (T.mkVar 0) T.mkDesc)
+          (T.mkLam "ih" (T.mkPi "s" (T.mkVar 1) (T.mkU 0)) T.mkUnit)))
+        (T.mkLam "D" T.mkDesc (T.mkLam "ih" (T.mkU 0) T.mkUnit))
+        (T.mkLam "S" (T.mkU 0) (T.mkLam "D" T.mkDesc
+          (T.mkLam "ih" (T.mkU 0) T.mkUnit)))
+        T.mkDescRet)).type.tag;
+      expected = "VU";
+    };
+
+    # con ret Zero rejected — interp(ret, μ ret) = Unit, Zero : Nat ≠ Unit
+    "reject-desc-con-bad-payload" = {
+      expr = (inferTm ctx0 (T.mkDescCon T.mkDescRet T.mkZero)) ? error;
+      expected = true;
+    };
+
+    # arg Zero (...) rejected — Zero : Nat, not a type in U(0)
+    "reject-desc-arg-bad-S" = {
+      expr = (inferTm ctx0 (T.mkDescArg T.mkZero T.mkDescRet)) ? error;
+      expected = true;
+    };
+
+    # -- desc-ind type checking tests --
+
+    # ind ret (λ_.Nat) (λd ih. 0) (con tt) : Nat
+    "infer-desc-ind-ret" = {
+      expr = (inferTm ctx0 (T.mkDescInd T.mkDescRet
+        (T.mkLam "_" (T.mkMu T.mkDescRet) T.mkNat)
+        (T.mkLam "d" T.mkUnit (T.mkLam "ih" T.mkUnit T.mkZero))
+        (T.mkDescCon T.mkDescRet T.mkTt))).type.tag;
+      expected = "VNat";
+    };
+
+    # ind (arg Bool ret) P step (con (false, tt)) : Nat
+    "infer-desc-ind-arg" = {
+      expr = let
+        D = T.mkDescArg T.mkBool T.mkDescRet;
+      in (inferTm ctx0 (T.mkDescInd D
+        (T.mkLam "_" (T.mkMu D) T.mkNat)
+        (T.mkLam "d" (T.mkSigma "_" T.mkBool T.mkUnit)
+          (T.mkLam "ih" T.mkUnit T.mkZero))
+        (T.mkDescCon D (T.mkPair T.mkFalse T.mkTt)))).type.tag;
+      expected = "VNat";
     };
   };
 }

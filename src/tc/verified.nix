@@ -275,8 +275,8 @@ in mk {
     # ===== Literal constructors type-check =====
 
     "v-nat-5" = {
-      expr = (H.checkHoas NatT (nat 5)).tag;
-      expected = "succ";
+      expr = let t = H.checkHoas NatT (nat 5); in "${t.tag}/${t.d.fst.tag}";
+      expected = "desc-con/false";
     };
     "v-str-hello" = {
       expr = (H.checkHoas StringT (str "hello")).tag;

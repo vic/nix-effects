@@ -77,6 +77,14 @@ let
     else if t == "VInr" then T.mkInr (quote d v.left) (quote d v.right) (quote d v.val)
     else if t == "VEq" then T.mkEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
     else if t == "VRefl" then T.mkRefl
+    # Descriptions
+    else if t == "VDesc" then T.mkDesc
+    else if t == "VDescRet" then T.mkDescRet
+    else if t == "VDescArg" then T.mkDescArg (quote d v.S) (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
+    else if t == "VDescRec" then T.mkDescRec (quote d v.D)
+    else if t == "VDescPi" then T.mkDescPi (quote d v.S) (quote d v.D)
+    else if t == "VMu" then T.mkMu (quote d v.D)
+    else if t == "VDescCon" then T.mkDescCon (quote d v.D) (quote d v.d)
     else if t == "VU" then T.mkU v.level
     else if t == "VString" then T.mkString
     else if t == "VInt" then T.mkInt
@@ -120,6 +128,11 @@ let
       T.mkJ (quote d elim.type) (quote d elim.lhs) (quote d elim.motive)
         (quote d elim.base) (quote d elim.rhs) head
     else if t == "EStrEq" then T.mkStrEq head (quote d elim.arg)
+    else if t == "EDescInd" then
+      T.mkDescInd (quote d elim.D) (quote d elim.motive) (quote d elim.step) head
+    else if t == "EDescElim" then
+      T.mkDescElim (quote d elim.motive) (quote d elim.onRet)
+        (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi) head
     else throw "tc: quoteElim unknown tag '${t}'";
 
   # Normalize: eval then quote
@@ -258,6 +271,42 @@ in mk {
     "quote-ne-j" = {
       expr = (quote 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ])).tag;
       expected = "j";
+    };
+
+    # -- Descriptions --
+    "quote-desc" = { expr = (quote 0 V.vDesc).tag; expected = "desc"; };
+    "quote-desc-ret" = { expr = (quote 0 V.vDescRet).tag; expected = "desc-ret"; };
+    "quote-desc-arg" = {
+      expr = (quote 0 (V.vDescArg V.vBool (V.mkClosure [] T.mkDescRet))).tag;
+      expected = "desc-arg";
+    };
+    "quote-desc-rec" = { expr = (quote 0 (V.vDescRec V.vDescRet)).tag; expected = "desc-rec"; };
+    "quote-desc-pi" = { expr = (quote 0 (V.vDescPi V.vBool V.vDescRet)).tag; expected = "desc-pi"; };
+    "quote-desc-pi-S" = { expr = (quote 0 (V.vDescPi V.vBool V.vDescRet)).S.tag; expected = "bool"; };
+    "quote-desc-pi-D" = { expr = (quote 0 (V.vDescPi V.vBool V.vDescRet)).D.tag; expected = "desc-ret"; };
+    "quote-mu" = { expr = (quote 0 (V.vMu V.vDescRet)).tag; expected = "mu"; };
+    "quote-desc-con" = {
+      expr = (quote 0 (V.vDescCon V.vDescRet V.vTt)).tag;
+      expected = "desc-con";
+    };
+    "quote-ne-desc-ind" = {
+      expr = (quote 1 (V.vNe 0 [ (V.eDescInd V.vDescRet V.vNat V.vZero) ])).tag;
+      expected = "desc-ind";
+    };
+    "quote-ne-desc-elim" = {
+      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vNat V.vZero V.vZero V.vZero V.vZero) ])).tag;
+      expected = "desc-elim";
+    };
+
+    # Roundtrip: eval then quote for desc-pi
+    "nf-desc-pi" = {
+      expr = (nf [] (T.mkDescPi T.mkNat T.mkDescRet)).tag;
+      expected = "desc-pi";
+    };
+    "nf-desc-pi-roundtrip" = {
+      expr = nf [] (nf [] (T.mkDescPi T.mkBool T.mkDescRet))
+          == nf [] (T.mkDescPi T.mkBool T.mkDescRet);
+      expected = true;
     };
 
     # -- Binders (Pi, Lam, Sigma) --
