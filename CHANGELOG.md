@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-16
+
+Six upstream PRs land alongside a kernel-level description universe.
+From @vic: Kyo-style handler rotation and a `scope` module for
+lexically scoped handlers (#8), `bind.*` operators for
+attrset/computation/function composition (#12), an `isComp` predicate
+on the computation ADT (#13), a first-class `state.update` (#15), and
+CI for pull requests (#16). From @sini (first contribution, landing
+via #14): effectful-resume handlers that can reply with a computation
+and have its effects spliced into the continuation. Thanks to both.
+
+On the kernel side, `Desc` and `μ` join as primitives, and `Nat`,
+`List`, `Sum`, and `Unit` are rebuilt as HOAS descriptions on top — so
+further inductives can be added as ordinary data rather than new
+kernel nodes. Σ-η and ⊤-η conversion rules are added. A follow-up fix
+(`effectRotateSlow` now splices computation resumes correctly; see
+Fixed) closes a bug found during review of #14.
+
+### Added
+
+- **Kyo-style handler rotation** (`fx.rotate`) — handles matching
+  effects and rotates unknown ones outward so an enclosing handler can
+  resume them. Implements the law
+  `handle(t1, suspend(t2, i, k), f) = suspend(t2, i, x → handle(t1, k(x), f))`.
+  Credit: @vic (#8)
+- **Scoped handlers** (`fx.effects.scope`) — `scope.run` installs
+  handlers for a subcomputation and hides the scope's internal state,
+  `scope.runWith` exposes it, and `scope.stateful` threads caller
+  state across rotation. Credit: @vic (#8)
+- **Effectful-resume handlers** — a handler may return a computation
+  as its `resume` value; its effects are spliced before the pending
+  continuation. Fast path uses `resumeCompOrValue` which dispatches
+  on whether the resume is a computation. Credit: @sini (#14)
+- **Description universe in the kernel** — `Desc` and `μ` as kernel
+  primitives, with strict positivity guard, HOAS descriptor pieces
+  (`descArg`, `descRec`, `descPi`, `descRet`), `descElim`/`descInd`
+  elimination, and `interpHoas` for description interpretation
+- **Nat/List/Sum/Unit rebound as HOAS descriptions** — kernel
+  representations live entirely in the description universe; no
+  dedicated kernel nodes for each type
+- **Σ-η and ⊤-η conv rules** — `pair (fst p) (snd p) ≡ p` for Sigma
+  and `tt ≡ _` for Unit, at the kernel conversion level
+- **`bind.*` operators** — `bindAttrs`, `bindFx`, `bindFn` for monadic
+  composition over attrset projections, computations, and Kleisli
+  arrows. Credit: @vic (#12)
+- **`state.update`** — effectful state transformer obeying
+  `get >>= f >>= ({s, v}: put s >> pure v)`. Credit: @vic (#15)
+- **`isComp`** — tag-based predicate on the computation ADT boundary.
+  Credit: @vic (#13)
+- **Pull-request CI** (`.github/workflows/flake-check.yml`) — runs
+  `nix flake check -L` on PR events. Credit: @vic (#16)
+- **CI and release badges** on the README
+
+### Fixed
+
+- **`effectRotateSlow` now splices computation resumes correctly.**
+  When the depth ≥ 500 fast-to-slow threshold was crossed and a handler
+  returned a computation as its `resume`, the slow path previously used
+  `resumeWithQueue`, which treats the resume as a plain value. For the
+  common case of an Identity continuation queue this wrapped the
+  computation in `pure`, short-circuiting the loop with the inner
+  effects unrun. Swap to `resumeCompOrValue` to match the fast path.
+  Regression test: `effectRotationSlowPathEffectfulResume`.
+
+### Changed
+
+- **README** — rewritten intro, new `## Features` section covering
+  effects-layer and MLTT kernel capabilities, old "No handler layering"
+  limitation removed (superseded by `fx.effects.scope`), old "single
+  source of truth" paragraph refocused on the real underlying
+  limitation (`Certified` carries a Boolean witness, not an
+  inhabitation proof)
+
 ## [0.6.0] - 2026-04-14
 
 ### Added

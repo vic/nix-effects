@@ -1,12 +1,15 @@
 # nix-effects
 
-A freer-monad effect layer for pure Nix, with a dependent type checker
-built on top of it.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml/badge.svg)](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml)
+[![Release](https://img.shields.io/github/v/release/kleisli-io/nix-effects)](https://github.com/kleisli-io/nix-effects/releases)
 
-The effect layer is where the DX comes from. Validation is phrased as a
-`typeCheck` effect, and the same validator can run under different
-handlers that choose what happens on a failure. The handler is where
-the policy lives, not the validator.
+A freer-monad effect layer in pure Nix, with a dependent type checker
+on top of it.
+
+Validation is a `typeCheck` effect. A validator walks a nested record
+and sends `typeCheck` at every leaf; the handler decides what happens
+on failure:
 
 ```nix
 # src/effects/typecheck.nix — three handlers for the same effect.
@@ -46,38 +49,97 @@ logging = {
 };
 ```
 
-A validator that walks a nested record and sends a `typeCheck` effect at
-every leaf runs unchanged under all three. Under `strict` it aborts at
-the first bad field. Under `collecting` it visits every leaf and returns
-a list of failures with their contexts. Under `logging` it records every
-check the validator ever made, pass or fail, which is useful when you
-are debugging a validator that rejects a value you thought it should
-accept.
+The same validator runs under all three without a rewrite. `strict`
+throws on the first bad field. `collecting` visits every leaf and
+returns the failures with their `context` paths. `logging` records
+every check, pass or fail — how you debug a validator that rejects a
+value you thought it should accept.
 
-The `context` field is the field path into the value. When a
-validator walking a deeply nested record reports a failure, the
-context is where the path comes from.
+The dependent type checker in `src/tc/` is ordinary pure Nix — no
+`fx.*` calls — but `.validate` routes through `typeCheck`, so type
+errors in deeply nested terms come back with the field path that
+broke.
 
-On top of the effect layer sits a Martin-Löf dependent type checker in
-`src/tc/` with Pi, Sigma, identity types with J, cumulative universes,
-HOAS elaboration, and verified extraction of plain Nix functions from
-proof terms. The kernel itself is pure functions over values, no
-`fx.*` calls, independent of the effect layer. The effect layer is
-what surfaces kernel errors to users. The bidirectional checker sends
-`typeCheck` effects carrying the same `context` field shown above, so
-type errors in deeply nested terms come back localized to the field
-that broke.
-
-Underneath the effect layer sits a trampoline built on
-`builtins.genericClosure` with `deepSeq` applied to the key function.
-Nix caps its call stack at 10,000 frames, and the trampoline is how
-deep recursion happens in the effect layer's interpreter loop and in
-the kernel without touching that stack. See
+Recursion in the kernel and the effect interpreter goes through a
+trampoline built on `builtins.genericClosure` (Nix's only iterative
+primitive) with `deepSeq` on the dedup key to break thunk chains. Call
+stack stays O(1); 1M operations evaluate in roughly 3 seconds. See
 [`book/src/trampoline.md`](book/src/trampoline.md).
 
-Everything runs at `nix eval` time, before anything builds or ships.
+Everything runs at `nix eval` time.
 
 **[Documentation](https://docs.kleisli.io/nix-effects)**
+
+## Features
+
+### Effects layer
+
+- **Freer monad with FTCQueue** — O(1) `bind` via catenable queue snoc
+  (Kiselyov & Ishii 2015)
+- **Trampolined interpreter** — O(1) call-stack depth built on
+  `builtins.genericClosure` with `deepSeq`-broken thunk chains;
+  100k operations in the test suite, 1M in ~3s manually
+- **Handler semantics** — `resume`/`abort` following Plotkin & Pretnar (2009);
+  handlers may return a computation as their `resume` and have its
+  effects spliced into the pending continuation
+- **Selective handler rotation** (`fx.rotate`) — handles matching effects
+  and forwards unknown ones outward (Kyo-style law
+  `handle(t1, suspend(t2, i, k), f) = suspend(t2, i, x → handle(t1, k(x), f))`)
+- **Scoped handlers** (`fx.effects.scope`) — `run`, `runWith`, and `stateful`
+  install handlers over a subcomputation with optional state hiding
+- **State composition via lenses** — `fx.adapt` and `fx.adaptHandlers`
+  lift handlers over component state into handlers over parent state
+- **Built-in effects** — `state`, `reader`, `writer`, `acc` (accumulation),
+  `choice` (nondeterminism), `error`, `conditions` (Common-Lisp-style
+  restarts), `typecheck` (blame-tracking validation), `linear` (graded
+  linear resource tracking)
+- **Streams** — effectful lazy sequences with `map`, `filter`, `take`,
+  `takeWhile`, `fold`, `scanl`, `zip`, `zipWith`, `interleave`, etc.
+
+### Type system and MLTT kernel
+
+- **Primitives** — `String`, `Int`, `Bool`, `Float`, `Attrs`, `Path`,
+  `Function`, `Null`, `Unit`, `Any`
+- **Compound types** — `Record`, `ListOf`, `Maybe`, `Either`, `Variant`,
+  `Vector`
+- **Dependent types** — `Pi` (dependent function), `Sigma` (dependent
+  pair), `DepRecord`, `Certified` (Σ with a Boolean witness — see
+  [Known limitations](#known-limitations))
+- **Identity types with `J` elimination** — `sym`, `trans`, `cong`,
+  `transport` derived from `J`; `Refl` as the sole introduction form
+- **Inductive types via a description universe** — `Desc` and `μ` as
+  kernel primitives; `Nat`, `List`, `Sum`, and `Unit` rebuilt as HOAS
+  descriptions on top, so further inductives don't require kernel changes
+- **Refinement types** — narrow any type with a predicate;
+  combinators `allOf`, `anyOf`, `negate`; helpers `positive`,
+  `nonNegative`, `inRange`, `nonEmpty`, `matching`
+  (Freeman & Pfenning 1991; cf. Rondon et al. 2008)
+- **Linear/Affine/Graded types** — resource tracking with exact,
+  ≤-bounded, or =k-bounded usage counts
+- **Cumulative universes** — `Type_0 .. Type_4` (and `typeAt n` for
+  any n), level computed from typing derivation for kernel-backed types
+- **Bidirectional type checking with NbE** — normalization by evaluation,
+  `check`/`infer` split, HOAS elaboration
+  (Dunfield & Krishnaswami 2021)
+- **Proof terms and verified extraction** — `fx.types.hoas` combinators
+  build proof terms; `fx.types.extract` and `verifyAndExtract` produce
+  plain Nix callables from verified HOAS bodies
+- **Polarity-aware elaboration** — positive types (Sigma, Sum, Nat)
+  elaborate structurally; negative types (Pi) elaborate opaquely with
+  a domain-check trust boundary (`mkOpaqueLam`)
+- **Typecheck effect with blame context** — `.validate` sends `typeCheck`
+  effects carrying a path-qualified `context` field, so the same
+  validator runs under strict, collecting, or logging handlers without
+  rewriting
+
+### Applications
+
+- **Category theory library** (`apps/category-theory/`) — formally verified
+  `add` with commutativity, `Monoid` and `Category` as dependent sigmas
+  with `(Nat, +, 0)` as a shared instance, doubling endofunctor with
+  functoriality, Yoneda's lemma with round-trip proofs
+- **Expression interpreter and build simulator** (`apps/interp/`,
+  `apps/build-sim/`) — effect-layer benchmarks at scale
 
 ## Quick start
 
@@ -197,43 +259,6 @@ Type_2  # Type of Type_1
 (typeAt 0).check Int    # true — Int lives at universe 0
 level Int               # 0
 ```
-
-## Apps
-
-Standalone applications built on the library, in `apps/`:
-
-### Category theory (`apps/category-theory/`)
-
-A formally verified category theory library where every theorem is
-type-checked at Nix eval time. If evaluation completes, the proofs are correct.
-
-- **Proof combinators**: `sym`, `trans`, `cong` derived from J elimination
-- **Arithmetic**: `add` with 7 verified properties — left/right identity,
-  successor, associativity, right-successor, and commutativity
-- **Algebraic structures**: `Monoid` and `Category` encoded as dependent sigma
-  types, with `(Nat, +, 0)` as a verified instance of both
-- **Functor**: doubling endofunctor with identity and composition preservation
-  proved via a 5-step equational rewriting chain
-- **Yoneda's lemma**: for any type A, point a : A, and type family B : A → U,
-  the space of sections Π(x:A). Eq(A,a,x) → B(x) is isomorphic to B(a).
-  Both directions verified with round-trip proofs — `evalLift` by the
-  computation rule of J, `liftEval` by path induction
-
-```nix
-let
-  fx = import ./. {};
-  cat = import ./apps/category-theory { inherit fx; };
-in {
-  cat.tests.allPass;          # true — all 22 tests pass (19 proofs + 3 computation)
-  cat.api.add 3 5;            # 8 — extracted Nix function
-  cat.api.double 4;           # 8
-}
-```
-
-### Benchmarks (`apps/interp/`, `apps/build-sim/`)
-
-Expression interpreter and dependency graph evaluator for benchmarking the
-effect layer at scale. Run with `nix run .#bench` / `nix run .#bench-compare`.
 
 ## Effects
 
@@ -401,15 +426,13 @@ manual runs confirm 1,000,000 operations in ~3 seconds with constant memory.
 
 ## Known limitations
 
-**Kernel is the single source of truth.** Every `.check` call runs through
-the kernel's `decide` procedure — there is no separate contract system.
-The MLTT type-checking kernel (`src/tc/`) provides bidirectional type
-checking with normalization by evaluation (NbE), proof terms, and formal
-verification for universally quantified properties. The `Certified`
-type's witness is a boolean, not an inhabitation proof — kernel proofs
-use HOAS combinators from `fx.types.hoas`. See Findler & Felleisen (2002)
-for the contract-theoretic framing and Dunfield & Krishnaswami (2021)
-for the bidirectional checking approach.
+**`Certified` carries a boolean witness, not an inhabitation proof.**
+`Certified(A, P) = Σ(v:A).{p : Bool | p ∧ P(v)}` stores the boolean
+result of `P(v)` as its second component rather than a term inhabiting
+`P(v)`. Predicate evaluation happens at construction time and produces
+no transportable proof term. For genuinely propositional content, use
+`Pi` with identity types and the `J`-derived combinators (`sym`,
+`trans`, `cong`, `transport`) from `fx.types.hoas`.
 
 **Universe levels are partially enforced.** For kernel-backed types,
 `checkTypeLevel` computes the correct universe level from the typing derivation.
@@ -425,11 +448,6 @@ contributes both the freer monad encoding with FTCQueue and extensible effects
 via open unions. nix-effects implements the first but not the second. Effect
 handlers go into a single flat attrset per `run` call; name collisions are
 silently accepted (last handler wins via attrset merge).
-
-**No handler layering.** Each `run` call takes one handler set.
-Nested `run` calls are possible but there is no automatic effect
-forwarding to outer handlers. The `adapt` combinator addresses state
-shape composition, not effect isolation.
 
 **O(1) stack depth caveat.** The trampoline gives O(1) stack for the main
 dispatch loop. Continuation queue application is inlined as a recursive

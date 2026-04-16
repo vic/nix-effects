@@ -154,7 +154,7 @@ let
                   [{ key = k; _comp = pure (done result.abort newState); _state = newState; }]
                 else if result ? resume then
                   [{ key = k;
-                     _comp = resumeWithQueue step._comp.queue result.resume;
+                     _comp = resumeCompOrValue step._comp.queue result.resume;
                      _state = newState; }]
                 else
                   throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"

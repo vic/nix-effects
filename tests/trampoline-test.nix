@@ -308,6 +308,25 @@ let
       state = null;
     };
 
+  effectRotationSlowPathEffectfulResume =
+    let
+      comp = bind (buildChain "inc" 1 501) (_: send "compute" null);
+
+      rotated = fx.rotate {
+        handlers = {
+          inc     = { param, state }: { resume = null; state = state + param; };
+          compute = { param, state }: {
+            resume = bind (send "aux" null) (x: pure (x * 10));
+            inherit state;
+          };
+          aux     = { param, state }: { resume = 7; inherit state; };
+        };
+        state = 0;
+      } comp;
+
+      result = handle { handlers = {}; } rotated;
+    in result.value.value == 70;
+
 in {
   inherit pureComputation singleEffect simpleCounter
           tenThousandOps hundredThousandOps
@@ -319,7 +338,8 @@ in {
           effectRotationResumesInner
           effectRotationSuspendsUnknown
           effectRotationStackSafety
-          effectRotationNestedHandlers;
+          effectRotationNestedHandlers
+          effectRotationSlowPathEffectfulResume;
 
   allPass = pureComputation && singleEffect && simpleCounter
             && tenThousandOps && hundredThousandOps
@@ -331,5 +351,6 @@ in {
             && effectRotationResumesInner
             && effectRotationSuspendsUnknown
             && effectRotationStackSafety
-            && effectRotationNestedHandlers;
+            && effectRotationNestedHandlers
+            && effectRotationSlowPathEffectfulResume;
 }

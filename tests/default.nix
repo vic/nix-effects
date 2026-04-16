@@ -30,7 +30,8 @@ in {
           effectRotationResumesInner
           effectRotationSuspendsUnknown
           effectRotationStackSafety
-          effectRotationNestedHandlers;
+          effectRotationNestedHandlers
+          effectRotationSlowPathEffectfulResume;
 
   inherit (typesTests) validPortTest vectorTest universeTest
           recordRefinementTest maybeTest depRecordTest
