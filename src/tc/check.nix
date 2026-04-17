@@ -204,17 +204,15 @@ let
 
     # desc-con checked against Mu — trampolined for deep recursive data (5000+).
     # Peels a homogeneous desc-con chain along its single recursive position.
-    # Two payload shapes are recognized, both along the same D (reference-
-    # identity; elaborate emits a shared D term per chain):
+    # The outer D's false-branch shape drives decomposition: iff
+    # `linearProfile subFalse` is a list of n data-field types, each layer's
+    # payload is `pair false (pair f_1 (… (pair REC tt) …))` with n heads and
+    # a rec tail. Non-linear shapes (tree, mutual recursion) fall through to
+    # per-layer checking.
     #
-    #   recursive-only: `pair false (pair TAIL tt)`
-    #   recursive+head: `pair false (pair HEAD (pair TAIL tt))`
-    #
-    # For the second shape the per-layer HEAD is type-checked against elemVal,
-    # obtained by instantiating D's outer closure at vFalse: if the resulting
-    # sub-description is `VDescArg elem (…)`, elem is the element type; if it
-    # is `VDescRec …` (recursive-only shape) the instantiation yields null
-    # and per-layer head checks are skipped.
+    # D-sharing across layers: fast path is structural equality of the D
+    # subterm (holds when elaborate emits a shared dTm per chain); fallback
+    # is conv-equality of the evaluated D against the outer dVal.
     else if t == "desc-con" && ty.tag == "VMu" then
       bind (check ctx tm.D V.vDesc) (dTm:
         let dVal = E.eval ctx.env dTm; in
@@ -223,31 +221,43 @@ let
           (Q.quote ctx.depth ty.D) (Q.quote ctx.depth dVal) tm
         else
           let
-            # peel : Tm → null | { tail : Tm; heads : [Tm]; }
-            # heads = []   for recursive-only shape
-            # heads = [h]  for recursive+head shape (the per-layer element)
+            # subFalse: the false-tag branch of the outer bool-tag spine,
+            # or null when ty.D has no outer tag (trampoline disabled).
+            subFalse =
+              if ty.D.tag != "VDescArg" then null
+              else E.instantiate ty.D.T V.vFalse;
+            # linearProfile: Just [field-types] iff subFalse is descArg^n-
+            # (descRec descRet); null otherwise (peel declines, falls through).
+            profile = if subFalse == null then null else E.linearProfile subFalse;
+            nFields = if profile == null then 0 else builtins.length profile;
+            # Structural-equality fast path for shared-D chains; conv fallback
+            # for chains whose D is elab-produced fresh per layer (e.g., via
+            # β-reduction of a macro-generated constructor).
+            sameD = d2Tm:
+              if d2Tm == tm.D then true
+              else C.conv ctx.depth (E.eval ctx.env d2Tm) dVal;
+            # walkPayload: payload = pair false (pair f_1 (… (pair REC tt) …))
+            # Returns null on shape mismatch (peel declines on this layer).
+            walkPayload = payload:
+              if payload.tag != "pair" then null
+              else if payload.fst.tag != "false" then null
+              else
+                let
+                  collect = i: p: acc:
+                    if i == nFields then
+                      if p.tag != "pair" then null
+                      else if p.snd.tag != "tt" then null
+                      else if p.fst.tag != "desc-con" then null
+                      else { heads = acc; tail = p.fst; }
+                    else
+                      if p.tag != "pair" then null
+                      else collect (i + 1) p.snd (acc ++ [p.fst]);
+                in collect 0 payload.snd [];
             peel = node:
-              if node.tag != "desc-con" then null
-              else if node.D != tm.D then null
-              else let d = node.d; in
-                if d.tag != "pair" then null
-                else if d.fst.tag != "false" then null
-                else let inner = d.snd; in
-                  if inner.tag != "pair" then null
-                  else if inner.snd.tag == "tt" then
-                    # Nat shape: pair false (pair REC tt)
-                    let rec_ = inner.fst; in
-                    if rec_.tag != "desc-con" then null
-                    else if rec_.D != tm.D then null
-                    else { tail = rec_; heads = [ ]; }
-                  else if inner.snd.tag == "pair"
-                       && inner.snd.snd.tag == "tt" then
-                    # List shape: pair false (pair HEAD (pair REC tt))
-                    let rec_ = inner.snd.fst; in
-                    if rec_.tag != "desc-con" then null
-                    else if rec_.D != tm.D then null
-                    else { tail = rec_; heads = [ inner.fst ]; }
-                  else null;
+              if profile == null then null
+              else if node.tag != "desc-con" then null
+              else if !(sameD node.D) then null
+              else walkPayload node.d;
             # Integer key is sufficient for genericClosure dedup. `peel` is
             # O(1) field inspection returning a reference to an existing sub-Tm
             # of the concrete `tm`; no deferred continuation work accumulates
@@ -263,14 +273,6 @@ let
             n = builtins.length chain - 1;
             base = (builtins.elemAt chain n).val;
             interpTy = E.interp ty.D (V.vMu ty.D);
-            # Extract elemVal from D when the false-branch sub-description is
-            # `VDescArg elem (…)`. For nat-shape D (false-branch = VDescRec)
-            # this yields null and per-layer head checks are skipped.
-            elemVal =
-              if ty.D.tag != "VDescArg" then null
-              else let subFalse = E.instantiate ty.D.T V.vFalse; in
-                if subFalse.tag != "VDescArg" then null
-                else subFalse.S;
           in bind (check ctx base.d interpTy) (baseDataTm:
             let baseTm = T.mkDescCon dTm baseDataTm; in
             builtins.foldl' (accComp: i:
@@ -278,22 +280,30 @@ let
                 layer = (builtins.elemAt chain (n - 1 - i)).val;
                 peeled = peel layer;
                 heads = peeled.heads;
-              in
-              if heads == [ ] then
-                # Nat shape: canonical false + tt, no per-layer check.
-                bind accComp (acc:
+                # Type-check each head against its profile-declared type,
+                # preserving order. For nFields=0 this is a no-op.
+                checkHeads = remaining: accTms:
+                  if remaining == [] then pure accTms
+                  else
+                    let
+                      h = builtins.head remaining;
+                      rest = builtins.tail remaining;
+                    in bind (check ctx h.head h.S) (hTm:
+                      checkHeads rest (accTms ++ [hTm]));
+                tasks = builtins.genList (j:
+                  { head = builtins.elemAt heads j;
+                    S = (builtins.elemAt profile j).S;
+                  }) nFields;
+                # Reassemble: pair false (pair h_1 (… (pair acc tt) …)).
+                buildInner = hTms: innerTail:
+                  if hTms == [] then innerTail
+                  else T.mkPair (builtins.head hTms)
+                                (buildInner (builtins.tail hTms) innerTail);
+              in bind accComp (acc:
+                bind (checkHeads tasks []) (hTms:
                   pure (T.mkDescCon dTm
-                    (T.mkPair T.mkFalse (T.mkPair acc T.mkTt))))
-              else
-                # List shape: check the per-layer head against elemVal.
-                # elemVal is guaranteed non-null here because the peel
-                # returned a list-shape payload only when D's sub-false
-                # branch is VDescArg (same predicate that yields elemVal).
-                bind accComp (acc:
-                  bind (check ctx (builtins.head heads) elemVal) (hTm':
-                    pure (T.mkDescCon dTm
-                      (T.mkPair T.mkFalse
-                        (T.mkPair hTm' (T.mkPair acc T.mkTt))))))
+                    (T.mkPair T.mkFalse
+                      (buildInner hTms (T.mkPair acc T.mkTt))))))
             ) (pure baseTm) (builtins.genList (x: x) n)))
 
     # Sub rule: fall through to synthesis (§7.4 Sub)
@@ -508,6 +518,25 @@ let
     else if t == "desc-ret" then
       pure { term = T.mkDescRet; type = V.vDesc; }
 
+    # desc-arg (§2.4). `S` must live in `V.vU 0`: descriptions carry
+    # only small types, so any description argument type is in U 0.
+    #
+    # This has a user-facing consequence through the datatype macro.
+    # A data field `field name S` compiles to `descArg S _`, so `S` is
+    # restricted to U 0 — meaning a field cannot hold a value of type
+    # `U 0` itself, nor of a type family like `Π Obj. Π Obj. U 0`,
+    # since both live at U 1. The workaround is to lift such
+    # components out of the constructor and make them `datatypeP`
+    # parameters; parameters thread through `paramPi` (a plain
+    # Π-binder) and so accept any universe.
+    #
+    # When the kernel gains a universe-polymorphic `desc-arg` (tracking
+    # the argument's level on the output Desc), revisit the
+    # category-theory library under `apps/category-theory/`:
+    # `CategoryDT`, `MonoidHomDT`, and `FunctorDT` currently encode
+    # their universe-typed components as parameters purely because of
+    # this rule. Once the restriction is gone, data-field encodings
+    # become available and either approach is a matter of style.
     else if t == "desc-arg" then
       bind (check ctx tm.S (V.vU 0)) (sTm:
         let sVal = E.eval ctx.env sTm;

@@ -348,6 +348,62 @@ in mk {
       expected = "zero";
     };
 
+    # -- nf as a semantic-equivalence check --
+    # `nf [] a == nf [] b` (Nix structural ==) is used as an
+    # α-equivalence check across let-unfolding and β-reduction. The
+    # four tests below pin the properties it relies on:
+    #   1. `let` bindings normalize away (value substituted into body).
+    #   2. Fully-applied λs β-reduce.
+    #   3. Distinct terms produce distinct nf forms.
+    # Regressing any of these silently breaks every caller that uses
+    # `nf []` for term equivalence, so they are exercised here at the
+    # primitive level rather than being inferred from downstream tests.
+
+    "nf-gate-equal-let-transparent" = {
+      # let x:Nat = zero in succ x  ==nf==  succ zero
+      expr = nf [] (T.mkLet "x" T.mkNat T.mkZero (T.mkSucc (T.mkVar 0)))
+          == nf [] (T.mkSucc T.mkZero);
+      expected = true;
+    };
+    "nf-gate-equal-beta-matches-let" = {
+      # (λT:U0. λn:Nat. n) Nat zero  ==nf==  let T:U0=Nat in let n:Nat=zero in n
+      # Nested β-redex chain and nested let scaffold converge on the
+      # same nf form. Both reduce to `zero`.
+      expr = nf [] (T.mkApp
+                      (T.mkApp (T.mkLam "T" (T.mkU 0)
+                                (T.mkLam "n" T.mkNat (T.mkVar 0)))
+                               T.mkNat)
+                      T.mkZero)
+          == nf [] (T.mkLet "T" (T.mkU 0) T.mkNat
+                      (T.mkLet "n" T.mkNat T.mkZero (T.mkVar 0)));
+      expected = true;
+    };
+    "nf-gate-unequal-different-values" = {
+      # let x:Nat = zero in succ x         -- nf = succ zero
+      # let x:Nat = zero in succ (succ x)  -- nf = succ (succ zero)
+      # Guards against nf-equality collapsing under let-normalization.
+      expr = nf [] (T.mkLet "x" T.mkNat T.mkZero (T.mkSucc (T.mkVar 0)))
+          == nf [] (T.mkLet "x" T.mkNat T.mkZero
+                      (T.mkSucc (T.mkSucc (T.mkVar 0))));
+      expected = false;
+    };
+    "nf-gate-unequal-distinct-after-beta" = {
+      # (λf:Nat→Nat. f zero) (λx:Nat. x)        -- β → zero
+      # (λf:Nat→Nat. f zero) (λx:Nat. succ x)   -- β → succ zero
+      # Higher-order: two applications differing only in the function
+      # argument must nf to distinct forms once β fires.
+      expr = let
+        applyAtZero = g: T.mkApp
+          (T.mkLam "f" (T.mkPi "_" T.mkNat T.mkNat)
+            (T.mkApp (T.mkVar 0) T.mkZero))
+          g;
+        identityNat = T.mkLam "x" T.mkNat (T.mkVar 0);
+        succFn      = T.mkLam "x" T.mkNat (T.mkSucc (T.mkVar 0));
+      in nf [] (applyAtZero identityNat)
+      == nf [] (applyAtZero succFn);
+      expected = false;
+    };
+
     # Stress tests — stack safety
     "quote-cons-5000" = {
       expr = let

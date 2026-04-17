@@ -254,6 +254,81 @@ let
       else if builtins.isFunction value then H.opaqueLam value hoasTy
       else throw "elaborateValue: Pi type expects function, got ${builtins.typeOf value}"
 
+    # μ-form types — covers `H.nat` (monomorphic, `_htag="mu"` with
+    # `_dtypeMeta`) and any raw `mu D` construction whose description
+    # reifies into one of the three prelude shapes. Detects shape by
+    # instantiating the description's bool-tag body and delegates to the
+    # corresponding "nat"/"list"/"sum" branches (which carry the
+    # Nix-level encoders). Element types for list/sum shapes are
+    # recovered via `reifyType` — the lossy fallback when no HOAS
+    # surface is available. The primary path for `H.listOf`/`H.sum` is
+    # the app-branch below, which preserves parameter HOAS directly.
+    else if t == "mu" then
+      let
+        tyVal = E.eval [] (H.elab hoasTy);
+        D = tyVal.D;
+      in
+      if D.tag != "VDescArg" || D.S.tag != "VBool"
+      then throw "elaborateValue: unsupported μ-shape (D.tag=${D.tag})"
+      else
+        let
+          subT = E.instantiate D.T V.vTrue;
+          subF = E.instantiate D.T V.vFalse;
+        in
+        if subT.tag == "VDescRet" && subF.tag == "VDescRec"
+        then elaborateValue { _htag = "nat"; } value
+        else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+        then elaborateValue
+               { _htag = "list"; elem = reifyType subF.S; }
+               value
+        else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+        then elaborateValue
+               { _htag = "sum";
+                 left = reifyType subT.S;
+                 right = reifyType subF.S; }
+               value
+        else throw "elaborateValue: unsupported μ-shape (subT=${subT.tag}, subF=${subF.tag})"
+
+    # App-spine types — `app^k head A1 … Ak` where `head` is a polyField
+    # carrying `_dtypeMeta` (e.g. `ListDT.T`/`SumDT.T` from `H.listOf`/
+    # `H.sum`, or any user-defined `datatypeP`-produced `T`). The app
+    # spine keeps each parameter HOAS as a structural slot, so surface
+    # sugar (record, variant, maybe) survives the indirection through
+    # the macro. `_dtypeMeta.cons` classifies the datatype's shape and
+    # dispatches the value walker; the literal app args are reused as
+    # the element HOAS, never round-tripped through a kernel value.
+    else if t == "app" then
+      let
+        peelSpine = node: args:
+          if (builtins.isAttrs node) && (node._htag or null) == "app"
+          then peelSpine node.fn ([ node.arg ] ++ args)
+          else { head = node; inherit args; };
+        spine = peelSpine hoasTy [];
+        head = spine.head;
+        args = spine.args;
+        meta = head._dtypeMeta or null;
+        fieldKinds = c: map (f: f.kind) c.fields;
+        isListShape = m:
+          builtins.length m.cons == 2
+          && fieldKinds (builtins.elemAt m.cons 0) == []
+          && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "rec" ];
+        isSumShape = m:
+          builtins.length m.cons == 2
+          && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
+          && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
+      in
+      if meta == null
+      then throw "elaborateValue: app head carries no _dtypeMeta (non-datatype app has no value-walker)"
+      else if isListShape meta && builtins.length args == 1
+      then elaborateValue { _htag = "list"; elem = builtins.elemAt args 0; } value
+      else if isSumShape meta && builtins.length args == 2
+      then elaborateValue {
+        _htag = "sum";
+        left = builtins.elemAt args 0;
+        right = builtins.elemAt args 1;
+      } value
+      else throw "elaborateValue: app-form datatype '${meta.name}' has no dedicated walker (shape: ${builtins.toJSON (map fieldKinds meta.cons)})"
+
     else throw "elaborateValue: unsupported type tag '${t}'";
 
   # -- Structural validation --
@@ -403,18 +478,114 @@ let
       if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value then []
       else [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
 
+    # μ-form types — mirror the elaborateValue "mu" branch: detect prelude
+    # shape via kernel-description instantiation and delegate to the
+    # corresponding nat/list/sum branch.
+    else if t == "mu" then
+      let
+        tyVal = E.eval [] (H.elab hoasTy);
+        D = tyVal.D;
+      in
+      if D.tag != "VDescArg" || D.S.tag != "VBool"
+      then [{ inherit path; msg = "unsupported μ-shape (D.tag=${D.tag})"; }]
+      else
+        let
+          subT = E.instantiate D.T V.vTrue;
+          subF = E.instantiate D.T V.vFalse;
+        in
+        if subT.tag == "VDescRet" && subF.tag == "VDescRec"
+        then validateValue path { _htag = "nat"; } value
+        else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+        then validateValue path
+               { _htag = "list"; elem = reifyType subF.S; }
+               value
+        else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+        then validateValue path
+               { _htag = "sum";
+                 left = reifyType subT.S;
+                 right = reifyType subF.S; }
+               value
+        else [{ inherit path; msg = "unsupported μ-shape (subT=${subT.tag}, subF=${subF.tag})"; }]
+
+    # App-spine types — mirror of elaborateValue's "app" branch. Peel the
+    # spine to the polyField head, read `_dtypeMeta.cons` for shape
+    # classification, delegate to the list/sum branch with the literal
+    # parameter HOAS preserved.
+    else if t == "app" then
+      let
+        peelSpine = node: args:
+          if (builtins.isAttrs node) && (node._htag or null) == "app"
+          then peelSpine node.fn ([ node.arg ] ++ args)
+          else { head = node; inherit args; };
+        spine = peelSpine hoasTy [];
+        head = spine.head;
+        args = spine.args;
+        meta = head._dtypeMeta or null;
+        fieldKinds = c: map (f: f.kind) c.fields;
+        isListShape = m:
+          builtins.length m.cons == 2
+          && fieldKinds (builtins.elemAt m.cons 0) == []
+          && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "rec" ];
+        isSumShape = m:
+          builtins.length m.cons == 2
+          && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
+          && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
+      in
+      if meta == null
+      then [{ inherit path; msg = "app head carries no _dtypeMeta (non-datatype app has no value-walker)"; }]
+      else if isListShape meta && builtins.length args == 1
+      then validateValue path
+             { _htag = "list"; elem = builtins.elemAt args 0; }
+             value
+      else if isSumShape meta && builtins.length args == 2
+      then validateValue path {
+        _htag = "sum";
+        left = builtins.elemAt args 0;
+        right = builtins.elemAt args 1;
+      } value
+      else [{ inherit path; msg = "app-form datatype '${meta.name}' has no dedicated walker"; }]
+
     else [{ inherit path; msg = "unsupported type tag '${t}'"; }];
 
   # -- Reification: kernel type value → HOAS type --
   #
   # reifyType : Val → HoasTree
   # Converts a kernel type value back to an HOAS type for extract dispatch.
-  # Used as fallback when the HOAS body cannot be applied (dependent types).
-  # Loses sugar (VSigma → H.sigma, not H.record) — HOAS body is preferred
-  # when available since it preserves record/variant/maybe structure.
+  # Used as fallback when the HOAS body cannot be applied (dependent types)
+  # and as the polymorphic-instantiation reducer for extractInner's "app"
+  # branch. Loses sugar (VSigma → H.sigma, not H.record) — HOAS body is
+  # preferred when available since it preserves record/variant/maybe
+  # structure.
+  #
+  # `reifyDesc` is the description-side counterpart, used by the "mu"
+  # fallback to rebuild a kernel description value as an HOAS description
+  # term. Anonymous (no constructor / field names recoverable from the
+  # kernel D alone — callers attach `_dtypeMeta` externally if needed).
+  reifyDesc = dVal:
+    let dt = dVal.tag; in
+    if dt == "VDescRet" then H.descRet
+    else if dt == "VDescRec" then H.descRec (reifyDesc dVal.D)
+    else if dt == "VDescPi" then H.descPi (reifyType dVal.S) (reifyDesc dVal.D)
+    else if dt == "VDescArg" then
+      H.descArg (reifyType dVal.S)
+        (x: reifyDesc (E.instantiate dVal.T (E.eval [] (H.elab x))))
+    else throw "reifyDesc: unsupported VDesc tag '${dt}'";
+
+  # The nat/list/sum reifications produce raw-tag HOAS attrsets rather
+  # than the module-level `H.nat`/`H.listOf`/`H.sum` combinators. The
+  # module-level combinators are app-spines (listOf/sum) or mu-forms
+  # with `_dtypeMeta` (nat); feeding them back into `extractInner` would
+  # re-enter the higher-level branches that reifyType is supposed to
+  # terminate. The raw tags dispatch directly to the `"nat"`/`"list"`/
+  # `"sum"` decoders in both `hoas.elaborate` and `extractInner`.
   reifyType = tyVal:
-    let t = tyVal.tag; in
-    if t == "VNat" then H.nat
+    let
+      t = tyVal.tag;
+      rawNat = { _htag = "nat"; };
+      rawList = elem: { _htag = "list"; inherit elem; };
+      rawSum = left: right: { _htag = "sum"; inherit left right; };
+    in
+    if t == "VNat" then rawNat
     else if t == "VBool" then H.bool
     else if t == "VString" then H.string
     else if t == "VUnit" then H.unit
@@ -425,8 +596,8 @@ let
     else if t == "VPath" then H.path
     else if t == "VFunction" then H.function_
     else if t == "VAny" then H.any
-    else if t == "VList" then H.listOf (reifyType tyVal.elem)
-    else if t == "VSum" then H.sum (reifyType tyVal.left) (reifyType tyVal.right)
+    else if t == "VList" then rawList (reifyType tyVal.elem)
+    else if t == "VSum" then rawSum (reifyType tyVal.left) (reifyType tyVal.right)
     else if t == "VSigma" then
       H.sigma tyVal.name (reifyType tyVal.fst)
         (x: reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
@@ -434,26 +605,32 @@ let
       H.forall tyVal.name (reifyType tyVal.domain)
         (x: reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
     else if t == "VU" then H.u tyVal.level
-    # VMu D — description-based prelude types. The three prelude descriptions
-    # share the outer shape `descArg bool (b: boolElim ... onTrue onFalse b)`.
-    # Dispatch structurally on the sub-descriptions at vTrue / vFalse:
+    # VMu D — description-based fixpoints. Three sugar shapes are detected
+    # first and reified to their named HOAS forms (preserves printed names
+    # in error messages):
     #   natDesc:      subT = VDescRet;           subF = VDescRec VDescRet
     #   listDesc e:   subT = VDescRet;           subF = VDescArg e (_: …)
     #   sumDesc l r:  subT = VDescArg l (_: …);  subF = VDescArg r (_: …)
-    # User-defined descriptions fall through to the throw.
+    # Anything else routes to the description-driven fallback `H.mu
+    # (reifyDesc D)` — the resulting form is anonymous (no constructor /
+    # field names) and is consumed by extractInner's "mu" branch which
+    # optionally merges `_dtypeMeta` supplied by the caller for named
+    # decomposition.
     else if t == "VMu" then
-      let D = tyVal.D; in
-      if D.tag != "VDescArg"
-      then throw "reifyType: unsupported VMu description (D.tag=${D.tag})"
-      else
-        let subT = E.instantiate D.T V.vTrue;
-            subF = E.instantiate D.T V.vFalse; in
-        if subT.tag == "VDescRet" && subF.tag == "VDescRec" then H.nat
-        else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
-        then H.listOf (reifyType subF.S)
-        else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
-        then H.sum (reifyType subT.S) (reifyType subF.S)
-        else throw "reifyType: unsupported VMu description (subT=${subT.tag}, subF=${subF.tag})"
+      let
+        D = tyVal.D;
+        fallback = H.mu (reifyDesc D);
+      in
+        if D.tag != "VDescArg" then fallback
+        else
+          let subT = E.instantiate D.T V.vTrue;
+              subF = E.instantiate D.T V.vFalse; in
+          if subT.tag == "VDescRet" && subF.tag == "VDescRec" then rawNat
+          else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+          then rawList (reifyType subF.S)
+          else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+          then rawSum (reifyType subT.S) (reifyType subF.S)
+          else fallback
     else throw "reifyType: unsupported value tag '${t}'";
 
   # -- Value extraction (internal) --
@@ -682,6 +859,167 @@ let
             codomainHoas = if r.success then r.value else reifyType codomainTyVal;
           in extractInner codomainHoas codomainTyVal resultVal
 
+    # Description-based fixpoints. Detect prelude-equivalent shapes by
+    # structure and delegate to the nat/list/sum branches to preserve
+    # the same Nix output for shape-equivalent values. Bool-shape and
+    # Unit-shape values (no dedicated "bool"/"unit" branch handles their
+    # VDescCon wrapping) decode inline to Nix bool / null. Other shapes
+    # decompose generically into a constructor record using `_dtypeMeta`
+    # for naming; without metadata, names are positional ("con0" /
+    # "_field0").
+    else if t == "mu" then
+      let
+        descTyVal = tyVal.D;
+        meta = hoasTy._dtypeMeta or null;
+
+        # Description-shape predicates. All require D to be `VDescArg bool
+        # (b: …)` (the macro's n>=2 spine) except isUnitDTShape (n=1).
+        boolHeaded = d:
+          d.tag == "VDescArg" && d.S.tag == "VBool";
+        # NatDT: subT=descRet, subF=descRec descRet.
+        isNatDesc = d:
+          boolHeaded d &&
+          (let subT = E.instantiate d.T V.vTrue;
+               subF = E.instantiate d.T V.vFalse; in
+           subT.tag == "VDescRet" && subF.tag == "VDescRec"
+           && subF.D.tag == "VDescRet");
+        # ListDT(elem): subT=descRet, subF=descArg elem (_: descRec descRet).
+        # The inner body is checked by instantiating subF.T at vFalse — the
+        # closure's argument is unused for ListDT (`_: descRec descRet`)
+        # so vFalse is a safe placeholder.
+        isListDesc = d:
+          boolHeaded d &&
+          (let subT = E.instantiate d.T V.vTrue;
+               subF = E.instantiate d.T V.vFalse; in
+           subT.tag == "VDescRet" && subF.tag == "VDescArg"
+           && (let body = E.instantiate subF.T V.vFalse; in
+               body.tag == "VDescRec" && body.D.tag == "VDescRet"));
+        # SumDT(l,r): subT=descArg l (_: descRet), subF=descArg r (_: descRet).
+        isSumDesc = d:
+          boolHeaded d &&
+          (let subT = E.instantiate d.T V.vTrue;
+               subF = E.instantiate d.T V.vFalse; in
+           subT.tag == "VDescArg" && subF.tag == "VDescArg"
+           && (let bT = E.instantiate subT.T V.vFalse;
+                   bF = E.instantiate subF.T V.vFalse; in
+               bT.tag == "VDescRet" && bF.tag == "VDescRet"));
+        # BoolDT shape: subT=descRet, subF=descRet (n=2, both ctors fieldless).
+        isBoolDTShape = d:
+          boolHeaded d &&
+          (let subT = E.instantiate d.T V.vTrue;
+               subF = E.instantiate d.T V.vFalse; in
+           subT.tag == "VDescRet" && subF.tag == "VDescRet");
+        # UnitDT shape: bare descRet (n=1).
+        isUnitDTShape = d:
+          d.tag == "VDescRet";
+
+        # Generic decomposition for non-prelude shapes. Walks the Bool-tag
+        # spine to determine the constructor index, then walks the per-arm
+        # data spine to extract fields. `pickArm` recurses through nested
+        # `VDescArg bool (b: boolElim _ <arm-i> <rest-spine> b)` layers
+        # produced by `spineDesc`; advances ctorIdx on every VFalse step.
+        # `extractFields` recurses through the per-arm data spine
+        # (VDescArg → field, VDescRec → recursive value, VDescPi → opaque
+        # function, VDescRet → terminus).
+        pickArm = idx: dTy: pl:
+          if dTy.tag == "VDescArg" && dTy.S.tag == "VBool" then
+            let tagVal = pl.fst;
+                subPayload = pl.snd; in
+            if tagVal.tag == "VTrue" then
+              pickArm idx (E.instantiate dTy.T V.vTrue) subPayload
+            else if tagVal.tag == "VFalse" then
+              pickArm (idx + 1) (E.instantiate dTy.T V.vFalse) subPayload
+            else throw "extract: mu tag is neither VTrue/VFalse (got ${tagVal.tag})"
+          else { ctorIdx = idx; armDesc = dTy; armPayload = pl; };
+        extractFields = dTy: pl:
+          if dTy.tag == "VDescRet" then []
+          else if dTy.tag == "VDescArg" then
+            let fieldVal = pl.fst;
+                rest = pl.snd;
+                fieldHoas = reifyType dTy.S;
+                fieldNix = extractInner fieldHoas dTy.S fieldVal;
+                subDesc = E.instantiate dTy.T fieldVal;
+            in [ fieldNix ] ++ extractFields subDesc rest
+          else if dTy.tag == "VDescRec" then
+            let recVal = pl.fst;
+                rest = pl.snd;
+                recNix = extractInner hoasTy tyVal recVal;
+            in [ recNix ] ++ extractFields dTy.D rest
+          else if dTy.tag == "VDescPi" then
+            # Opaque lambda field: return the kernel VLam wrapped as a
+            # Nix function via the existing pi-extract discipline. Domain
+            # is reified; codomain is the outer mu's hoasTy (rec under Pi).
+            let lamVal = pl.fst;
+                rest = pl.snd;
+                domainHoas = reifyType dTy.S;
+                piHoas = H.forall "_" domainHoas (_: hoasTy);
+                piTyVal = V.vPi "_" dTy.S (V.mkClosure [] (H.elab hoasTy));
+                lamNix = extractInner piHoas piTyVal lamVal;
+            in [ lamNix ] ++ extractFields dTy.D rest
+          else throw "extract: mu generic decomposition: unsupported VDesc tag '${dTy.tag}'";
+
+      in
+      if val.tag != "VDescCon"
+      then throw "extract: mu value is not a VDescCon (got ${val.tag})"
+      else if isUnitDTShape descTyVal then null
+      else if isBoolDTShape descTyVal then
+        if val.d.fst.tag == "VTrue" then true
+        else if val.d.fst.tag == "VFalse" then false
+        else throw "extract: BoolDT-shape value tag is neither VTrue/VFalse (got ${val.d.fst.tag})"
+      else if isNatDesc descTyVal
+      then extractInner { _htag = "nat"; } tyVal val
+      else if isListDesc descTyVal then
+        let elemTyVal = (E.instantiate descTyVal.T V.vFalse).S;
+        in extractInner { _htag = "list"; elem = reifyType elemTyVal; } tyVal val
+      else if isSumDesc descTyVal then
+        let leftTyVal = (E.instantiate descTyVal.T V.vTrue).S;
+            rightTyVal = (E.instantiate descTyVal.T V.vFalse).S;
+        in extractInner {
+          _htag = "sum";
+          left = reifyType leftTyVal;
+          right = reifyType rightTyVal;
+        } tyVal val
+      else
+        let
+          arm = pickArm 0 descTyVal val.d;
+          fieldVals = extractFields arm.armDesc arm.armPayload;
+          conName =
+            if meta != null
+            then (builtins.elemAt meta.cons arm.ctorIdx).name
+            else "con${toString arm.ctorIdx}";
+          fieldNames =
+            if meta != null
+            then map (f: f.name) (builtins.elemAt meta.cons arm.ctorIdx).fields
+            else builtins.genList (i: "_field${toString i}") (builtins.length fieldVals);
+        in
+          { _con = conName; }
+          // builtins.listToAttrs (builtins.genList (i: {
+               name = builtins.elemAt fieldNames i;
+               value = builtins.elemAt fieldVals i;
+             }) (builtins.length fieldVals))
+
+    # Polymorphic-instantiation surface: hoasTy is `app^k head A1 ... Ak`
+    # where `head` is the macro's `polyField "T"` carrying `_dtypeMeta`.
+    # tyVal is the kernel value computed by extract (`E.eval [] (H.elab
+    # hoasTy)`), already β-reduced past the application — typically a VMu.
+    # Reify the type to obtain a tag-dispatchable HOAS form, propagate
+    # `_dtypeMeta` from the head if present (so the mu-branch generic
+    # decomposition can name constructors), and recurse.
+    else if t == "app" then
+      let
+        peelHead = node:
+          if (builtins.isAttrs node) && (node._htag or null) == "app"
+          then peelHead node.fn
+          else node;
+        head = peelHead hoasTy;
+        headMeta = head._dtypeMeta or null;
+        base = reifyType tyVal;
+        hoasTy' =
+          if headMeta != null && (base._htag or null) == "mu"
+          then base // { _dtypeMeta = headMeta; }
+          else base;
+      in extractInner hoasTy' tyVal val
+
     else throw "extract: unsupported type '${t}'";
 
   # -- Value extraction (public API) --
@@ -817,17 +1155,24 @@ in mk {
       expr = (elaborateType UnitT)._htag;
       expected = "unit";
     };
+    # `H.listOf` and `H.sum` elaborate to app-spines of the macro's
+    # polymorphic `T`. The app form preserves `_dtypeMeta` on the
+    # polyField head and the parameter HOAS as literal args, which
+    # `elaborateValue`/`validateValue`/`extractInner` consume directly
+    # via their "app" branches. At the value level the application
+    # reduces to `VMu (listDesc A)` / `VMu (sumDesc A B)`; the Tm-level
+    # shape is "app".
     "elab-type-list-int" = {
       expr = (elaborateType (FC.ListOf IntT))._htag;
-      expected = "list";
+      expected = "app";
     };
     "elab-type-list-bool" = {
       expr = (elaborateType (FC.ListOf BoolT))._htag;
-      expected = "list";
+      expected = "app";
     };
     "elab-type-either" = {
       expr = (elaborateType (FC.Either IntT BoolT))._htag;
-      expected = "sum";
+      expected = "app";
     };
     "elab-type-arrow" = {
       expr = (elaborateType (Arrow IntT BoolT))._htag;
@@ -1026,6 +1371,15 @@ in mk {
       expected = true;
     };
 
+    # Names the shared-D fast path on the desc-con trampoline: H.cons
+    # emits a single dTm at elab time, so node.D == tm.D is structural-
+    # equal across layers and the peel short-circuits before reaching
+    # the conv-equality fallback.
+    "decide-list-5000-shared-d" = {
+      expr = decide (H.listOf H.nat) (builtins.genList (_: 0) 5000);
+      expected = true;
+    };
+
     # Stack safety: full pipeline on a deep Peano literal. Under μnatDesc
     # representation `natLit N` is an N-deep desc-con chain; this test exercises
     # the desc-con trampolines in elaborate/check/eval end-to-end. Bound chosen
@@ -1035,6 +1389,47 @@ in mk {
       expr = decide H.nat 1000;
       expected = true;
     };
+
+    # 5000-element list via the macro-generated ListDT.cons rather than
+    # H.cons. Each layer is a β-redex reducing to `desc-con D payload` at
+    # eval time; the desc-con trampoline identifies shared D across layers
+    # via conv-equality when structural == doesn't hold, and decomposes
+    # each layer's payload using linearProfile on the cons-branch
+    # description (Just [A], one head and a rec tail).
+    "decide-list-5000-macro" = {
+      expr = let
+        L = H.datatypeP "List" [{ name = "A"; kind = H.u 0; }] (ps:
+          let A = builtins.elemAt ps 0; in [
+            (H.con "nil"  [])
+            (H.con "cons" [ (H.field "head" A) (H.recField "tail") ])
+          ]);
+        nilA = H.app L.nil H.nat;
+        consA = h: t: H.app (H.app (H.app L.cons H.nat) h) t;
+        build = builtins.foldl' (acc: _: consA H.zero acc)
+          nilA (builtins.genList (x: x) 5000);
+        hoasTy = H.app L.T H.nat;
+        result = H.checkHoas hoasTy build;
+      in !(result ? error);
+      expected = true;
+    };
+
+    # 1000-deep Peano chain via the macro-generated NatDT.succ rather
+    # than H.succ. Each constructor cascade β-reduces at eval time; the
+    # desc-con trampoline peels via linearProfile at Just [] (0 data
+    # fields, rec tail), matching the succ-branch description shape.
+    "decide-nat-1000-macro" = {
+      expr = let
+        N = H.datatype "Nat" [
+          (H.con "zero" [])
+          (H.con "succ" [ (H.recField "pred") ])
+        ];
+        build = builtins.foldl' (acc: _: H.app N.succ acc)
+          N.zero (builtins.genList (x: x) 1000);
+        result = H.checkHoas N.T build;
+      in !(result ? error);
+      expected = true;
+    };
+
 
     # Dependent sigma: body produces "eq" which elaborateValue can't handle
     "decide-dep-sigma-rejected" = {
@@ -1544,6 +1939,165 @@ in mk {
     "extract-fn-throws" = {
       expr = (builtins.tryEval (extract H.function_ (E.eval [] (H.elab (elaborateValue H.function_ (x: x)))))).success;
       expected = false;
+    };
+
+    # -- Extraction: macro-generated datatypes (mu-branch + app-branch) --
+    # Macro-generated datatypes elaborate to HOAS types whose surface tag
+    # is "mu" (monomorphic) or "app" (polymorphic instantiation). The
+    # extractInner mu-branch detects prelude-equivalent shapes and routes
+    # to the same Nix output as the nat/list/sum/bool/unit branches; other
+    # shapes decompose generically into a constructor record `{ _con =
+    # "<name>"; <field> = ...; }` using `_dtypeMeta` attached to the
+    # macro's `T`. The app-branch peels the spine to the macro head,
+    # recovers `_dtypeMeta`, and reduces the type via reifyType.
+
+    "extract-mu-unit-tt" = {
+      expr = let
+        U = H.datatype "Unit" [ (H.con "tt" []) ];
+      in extract U.T (E.eval [] (H.elab U.tt));
+      expected = null;
+    };
+    "extract-mu-bool-true" = {
+      expr = let
+        B = H.datatype "Bool" [ (H.con "true" []) (H.con "false" []) ];
+      in extract B.T (E.eval [] (H.elab (builtins.getAttr "true" B)));
+      expected = true;
+    };
+    "extract-mu-bool-false" = {
+      expr = let
+        B = H.datatype "Bool" [ (H.con "true" []) (H.con "false" []) ];
+      in extract B.T (E.eval [] (H.elab (builtins.getAttr "false" B)));
+      expected = false;
+    };
+    "extract-mu-nat-zero" = {
+      expr = let
+        N = H.datatype "Nat" [
+          (H.con "zero" [])
+          (H.con "succ" [ (H.recField "pred") ])
+        ];
+      in extract N.T (E.eval [] (H.elab N.zero));
+      expected = 0;
+    };
+    "extract-mu-nat-3" = {
+      expr = let
+        N = H.datatype "Nat" [
+          (H.con "zero" [])
+          (H.con "succ" [ (H.recField "pred") ])
+        ];
+        three = H.app N.succ (H.app N.succ (H.app N.succ N.zero));
+      in extract N.T (E.eval [] (H.elab three));
+      expected = 3;
+    };
+
+    # Polymorphic via app: extract on `app (app ListDT.T nat)` peels the
+    # app spine, recovers `_dtypeMeta` from the polyField head, and
+    # delegates to the mu-branch with the reduced VMu kernel type.
+    "extract-app-list-empty" = {
+      expr = let
+        L = H.datatypeP "List" [{ name = "A"; kind = H.u 0; }] (ps:
+          let A = builtins.elemAt ps 0; in [
+            (H.con "nil"  [])
+            (H.con "cons" [ (H.field "head" A) (H.recField "tail") ])
+          ]);
+        Tnat = H.app L.T H.nat;
+        nilNat = H.app L.nil H.nat;
+      in extract Tnat (E.eval [] (H.elab nilNat));
+      expected = [];
+    };
+    "extract-app-list-3" = {
+      expr = let
+        L = H.datatypeP "List" [{ name = "A"; kind = H.u 0; }] (ps:
+          let A = builtins.elemAt ps 0; in [
+            (H.con "nil"  [])
+            (H.con "cons" [ (H.field "head" A) (H.recField "tail") ])
+          ]);
+        Tnat = H.app L.T H.nat;
+        nilNat = H.app L.nil H.nat;
+        consNat = h: t: H.app (H.app (H.app L.cons H.nat) h) t;
+        l = consNat H.zero (consNat (H.succ H.zero) (consNat (H.succ (H.succ H.zero)) nilNat));
+      in extract Tnat (E.eval [] (H.elab l));
+      expected = [ 0 1 2 ];
+    };
+    "extract-app-sum-left" = {
+      expr = let
+        S = H.datatypeP "Sum"
+          [ { name = "A"; kind = H.u 0; } { name = "B"; kind = H.u 0; } ]
+          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+            (H.con "inl" [ (H.field "value" A) ])
+            (H.con "inr" [ (H.field "value" B) ])
+          ]);
+        Tnb = H.app (H.app S.T H.nat) H.bool;
+        v = H.app (H.app (H.app S.inl H.nat) H.bool) H.zero;
+      in extract Tnb (E.eval [] (H.elab v));
+      expected = { _tag = "Left"; value = 0; };
+    };
+    "extract-app-sum-right" = {
+      expr = let
+        S = H.datatypeP "Sum"
+          [ { name = "A"; kind = H.u 0; } { name = "B"; kind = H.u 0; } ]
+          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+            (H.con "inl" [ (H.field "value" A) ])
+            (H.con "inr" [ (H.field "value" B) ])
+          ]);
+        Tnb = H.app (H.app S.T H.nat) H.bool;
+        v = H.app (H.app (H.app S.inr H.nat) H.bool) H.true_;
+      in extract Tnb (E.eval [] (H.elab v));
+      expected = { _tag = "Right"; value = true; };
+    };
+
+    # Generic decomposition for non-prelude shapes (TreeDT). Returns a
+    # constructor record carrying the macro-supplied constructor and field
+    # names from `_dtypeMeta`. Recursive fields recurse into the same outer
+    # hoasTy; data fields recurse via reifyType on the kernel field type.
+    "extract-mu-tree-leaf" = {
+      expr = let
+        Tree = H.datatypeP "Tree" [{ name = "A"; kind = H.u 0; }] (ps:
+          let A = builtins.elemAt ps 0; in [
+            (H.con "leaf" [ (H.field "value" A) ])
+            (H.con "node" [ (H.recField "left") (H.recField "right") ])
+          ]);
+        Tnat = H.app Tree.T H.nat;
+        v = H.app (H.app Tree.leaf H.nat) (H.succ H.zero);
+      in extract Tnat (E.eval [] (H.elab v));
+      expected = { _con = "leaf"; value = 1; };
+    };
+    "extract-mu-tree-node" = {
+      expr = let
+        Tree = H.datatypeP "Tree" [{ name = "A"; kind = H.u 0; }] (ps:
+          let A = builtins.elemAt ps 0; in [
+            (H.con "leaf" [ (H.field "value" A) ])
+            (H.con "node" [ (H.recField "left") (H.recField "right") ])
+          ]);
+        Tnat = H.app Tree.T H.nat;
+        leafZero = H.app (H.app Tree.leaf H.nat) H.zero;
+        leafOne  = H.app (H.app Tree.leaf H.nat) (H.succ H.zero);
+        v = H.app (H.app (H.app Tree.node H.nat) leafZero) leafOne;
+      in extract Tnat (E.eval [] (H.elab v));
+      expected = {
+        _con = "node";
+        left  = { _con = "leaf"; value = 0; };
+        right = { _con = "leaf"; value = 1; };
+      };
+    };
+
+    # reifyType for non-prelude VMu shapes: returns an `H.mu D'` form
+    # rather than throwing. Exercises the description-driven fallback —
+    # no metadata recovery from kernel D alone, so the result is anonymous;
+    # extractInner's "mu" branch handles the decomposition downstream when
+    # callers attach `_dtypeMeta` to the surface hoasTy.
+    "reify-mu-unit-shape" = {
+      expr = let
+        U = H.datatype "Unit" [ (H.con "tt" []) ];
+        tyVal = E.eval [] (H.elab U.T);
+      in (reifyType tyVal)._htag;
+      expected = "mu";
+    };
+    "reify-mu-bool-shape" = {
+      expr = let
+        B = H.datatype "Bool" [ (H.con "true" []) (H.con "false" []) ];
+        tyVal = E.eval [] (H.elab B.T);
+      in (reifyType tyVal)._htag;
+      expected = "mu";
     };
 
     # -- Cross-cutting integration tests --

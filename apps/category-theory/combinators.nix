@@ -1,15 +1,20 @@
-# Proof combinators derived from J elimination.
+# The three universally-applicable equality combinators, each derived
+# from a single use of the J eliminator (`H.j`). They are the first
+# chapter of the library: every subsequent proof that manipulates
+# equalities goes through them, usually via the pre-packaged tactics in
+# `prelude.nix` (`symProof`, `transProof`, `congAddRight`, `congSucc`)
+# which just specialise the motive.
+#
+# Each definition is verified against its stated type at Nix evaluation
+# time and then extracted as a callable Nix function.
 #
 #   sym   : Π(A:U). Π(a b : A). Eq(A,a,b) → Eq(A,b,a)
 #   trans : Π(A:U). Π(a b c : A). Eq(A,a,b) → Eq(A,b,c) → Eq(A,a,c)
 #   cong  : Π(A B : U). Π(f : A→B). Π(a b : A). Eq(A,a,b) → Eq(B,f(a),f(b))
-#
-# Each is a verified HOAS term: type-checked by the kernel, then extracted
-# as a callable Nix function.
 { prelude }:
 
 let
-  inherit (prelude) verify H U0 Eq Refl J Pi lam app;
+  inherit (prelude) verify U0 Eq Refl J Pi lam app;
 
 in rec {
 

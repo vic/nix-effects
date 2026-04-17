@@ -1,16 +1,24 @@
-# Yoneda's lemma (type-theoretic).
+# Yoneda's lemma as an equivalence of types.
 #
-# For A : U, a : A, B : A → U, the space of sections
-# Π(x:A). Eq(A,a,x) → B(x) is equivalent to B(a).
+# The library's previous chapters (`algebra.nix`, `functor.nix`) built a
+# specific category and a specific functor on it. Yoneda's lemma is the
+# general statement that sits behind the presheaf/representable-functor
+# correspondence: for any point `a : A` and any type family `B : A → U`,
+# the space of sections
 #
-# This is Yoneda's lemma viewed through the types-as-groupoids lens:
-# every natural transformation from the representable presheaf y(a)
-# to B is determined by its value at (a, refl).
+#     Π(x:A). Eq(A, a, x) → B(x)
 #
-#   yonedaEval : (Π(x:A). Eq(A,a,x) → B(x)) → B(a)
-#   yonedaLift : B(a) → Π(x:A). Eq(A,a,x) → B(x)
-#   evalLift   : Π(b:B(a)). eval(lift(b)) = b           (free by computation)
-#   liftEval   : Π(α). Π(x). Π(p). lift(eval(α),x,p) = α(x,p)  (by path induction)
+# is equivalent to the single fibre `B(a)`. Read through the types-as-
+# groupoids lens: a "natural transformation" out of the representable
+# presheaf `y(a)` is determined by its value on the universal element
+# `(a, refl)`.
+#
+# The equivalence is witnessed by four verified terms:
+#
+#   yonedaEval : (Π(x:A). Eq(A,a,x) → B(x)) → B(a)          — evaluate at (a, refl)
+#   yonedaLift : B(a) → Π(x:A). Eq(A,a,x) → B(x)            — transport along the path
+#   evalLift   : Π(b). eval(lift(b)) = b                    — free by computation
+#   liftEval   : Π(α). Π(x). Π(p). lift(eval(α))(x,p) = α(x,p) — by path induction
 { prelude }:
 
 let

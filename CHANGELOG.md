@@ -7,78 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-04-16
+## [0.8.0] - 2026-04-17
 
-Six upstream PRs land alongside a kernel-level description universe.
-From @vic: Kyo-style handler rotation and a `scope` module for
-lexically scoped handlers (#8), `bind.*` operators for
-attrset/computation/function composition (#12), an `isComp` predicate
-on the computation ADT (#13), a first-class `state.update` (#15), and
-CI for pull requests (#16). From @sini (first contribution, landing
-via #14): effectful-resume handlers that can reply with a computation
-and have its effects spliced into the continuation. Thanks to both.
-
-On the kernel side, `Desc` and `μ` join as primitives, and `Nat`,
-`List`, `Sum`, and `Unit` are rebuilt as HOAS descriptions on top — so
-further inductives can be added as ordinary data rather than new
-kernel nodes. Σ-η and ⊤-η conversion rules are added. A follow-up fix
-(`effectRotateSlow` now splices computation resumes correctly; see
-Fixed) closes a bug found during review of #14.
+A macro layer for user-defined datatypes lands on top of the kernel's description universe. Declaring an inductive type now means naming its fields; the macro compiles them to descriptions, flattens saturated and linear-recursive constructor chains to flat `desc-con` terms at elaboration time, and threads type parameters through a plain Π-binder so universe-typed components sit at the outside of the definition. `Nat`, `List`, and `Sum` are rebuilt through this surface. The category-theory example library is rewritten as a five-chapter guided tour that uses exactly the same macros users have.
 
 ### Added
 
-- **Kyo-style handler rotation** (`fx.rotate`) — handles matching
-  effects and rotates unknown ones outward so an enclosing handler can
-  resume them. Implements the law
-  `handle(t1, suspend(t2, i, k), f) = suspend(t2, i, x → handle(t1, k(x), f))`.
-  Credit: @vic (#8)
-- **Scoped handlers** (`fx.effects.scope`) — `scope.run` installs
-  handlers for a subcomputation and hides the scope's internal state,
-  `scope.runWith` exposes it, and `scope.stateful` threads caller
-  state across rotation. Credit: @vic (#8)
-- **Effectful-resume handlers** — a handler may return a computation
-  as its `resume` value; its effects are spliced before the pending
-  continuation. Fast path uses `resumeCompOrValue` which dispatches
-  on whether the resume is a computation. Credit: @sini (#14)
-- **Description universe in the kernel** — `Desc` and `μ` as kernel
-  primitives, with strict positivity guard, HOAS descriptor pieces
-  (`descArg`, `descRec`, `descPi`, `descRet`), `descElim`/`descInd`
-  elimination, and `interpHoas` for description interpretation
-- **Nat/List/Sum/Unit rebound as HOAS descriptions** — kernel
-  representations live entirely in the description universe; no
-  dedicated kernel nodes for each type
-- **Σ-η and ⊤-η conv rules** — `pair (fst p) (snd p) ≡ p` for Sigma
-  and `tt ≡ _` for Unit, at the kernel conversion level
-- **`bind.*` operators** — `bindAttrs`, `bindFx`, `bindFn` for monadic
-  composition over attrset projections, computations, and Kleisli
-  arrows. Credit: @vic (#12)
-- **`state.update`** — effectful state transformer obeying
-  `get >>= f >>= ({s, v}: put s >> pure v)`. Credit: @vic (#15)
-- **`isComp`** — tag-based predicate on the computation ADT boundary.
-  Credit: @vic (#13)
-- **Pull-request CI** (`.github/workflows/flake-check.yml`) — runs
-  `nix flake check -L` on PR events. Credit: @vic (#16)
+- **Datatype macro layer** (`fx.types.hoas.datatype` / `fx.types.hoas.datatypeP` + `field`, `fieldD`, `piField`, `piFieldD`, `recField`) — declarative HOAS surface for single- or multi-constructor inductive types. Dependent fields receive a `prev` marker map so later fields reference earlier ones by name; `datatypeP` parameters thread through a `paramPi` (plain Π) binder, outside the description's `descArg`; duplicate constructor names and zero-constructor datatypes are rejected eagerly
+- **Constructor-chain flattening at elaboration** — saturated (all-data) and linear-recursive (data-fields then one `rec`) shapes flatten to a single `desc-con` Tm (or a `genericClosure`-walked pyramid for the recursive shape). Deeply nested constructor applications (5000+ cons cells, 5000+ succs) type-check without blowing the C++ stack. Non-flattenable shapes fall through to the ann-wrapped λ-cascade path and behave identically to the pre-macro spelling
+- **`W`-type datatype macro** — self-application inside `datatypeP` for M-like datatypes (`W A P` with `A : U₀`, `P : A → U₀`, `sup : Π a. (P a → W) → W`)
+- **Dependent-field laws in the macro surface** — `fieldD`'s type function receives the full `prev` marker map, so associativity laws reference `prev.op`, category laws reference `prev.id` / `prev.comp`, etc. No projection chains
+- **Category-theory library rewritten as a guided tour** — five chapters that build on each other:
+  - `combinators.nix` — `sym`/`trans`/`cong` from J.
+  - `arithmetic.nix` — `add` with seven verified properties.
+  - `algebra.nix` — `Monoid` and `Category` as macro datatypes; instances `natAddMonoid`, `natCategory`; `compComm` stated categorically through `natCategory.comp`.
+  - `functor.nix` — `MonoidHom` and `Functor` as macro datatypes; doubling packaged as both `doubleHom` (monoid homomorphism) and `doubleFunctor` (endofunctor on `natCategory`).
+  - `yoneda.nix` — Yoneda's lemma as an equivalence of types.
+
+### Changed
+
+- **`Nat`, `List`, `Sum` use the macro surface for their µ/ctor/elim construction** — their HOAS forwarding stays unchanged from the user view; internally they flow through `datatype` / `datatypeP`, so every test-suite improvement on the macro improves the kernel primitives too
+- **`apps/category-theory/algebra.nix`** — old nested-Σ `MonoidOf` / `CategoryTy` encoding replaced by macro datatypes. `natAddMonoid` and `natCategory` are exposed as HOAS records carrying both the component HOAS terms (`.op`, `.e`, `.comp`, …) and the bundled `(ty, impl)` pair that the kernel checks
+- **Example-library invocations** — README and apps use `nix eval` rather than `nix-instantiate --eval --strict`
+
+### Documented
+
+- **`desc-arg` universe rule** — a principled note at check.nix's `desc-arg` rule explains why `S : U 0` is required, the parameter-lifting idiom that threads universe-typed components through `datatypeP` parameters, and that the category-theory library currently encodes `Obj` / `Hom` as parameters specifically because of this rule
+
+## [0.7.0] - 2026-04-16
+
+Six upstream PRs land alongside a kernel-level description universe. From @vic: Kyo-style handler rotation and a `scope` module for lexically scoped handlers (#8), `bind.*` operators for attrset/computation/function composition (#12), an `isComp` predicate on the computation ADT (#13), a first-class `state.update` (#15), and CI for pull requests (#16). From @sini (first contribution, landing via #14): effectful-resume handlers that can reply with a computation and have its effects spliced into the continuation. Thanks to both.
+
+On the kernel side, `Desc` and `μ` join as primitives, and `Nat`, `List`, `Sum`, and `Unit` are rebuilt as HOAS descriptions on top — so further inductives can be added as ordinary data rather than new kernel nodes. Σ-η and ⊤-η conversion rules are added. A follow-up fix (`effectRotateSlow` now splices computation resumes correctly; see Fixed) closes a bug found during review of #14.
+
+### Added
+
+- **Kyo-style handler rotation** (`fx.rotate`) — handles matching effects and rotates unknown ones outward so an enclosing handler can resume them. Implements the law `handle(t1, suspend(t2, i, k), f) = suspend(t2, i, x → handle(t1, k(x), f))`. Credit: @vic (#8)
+- **Scoped handlers** (`fx.effects.scope`) — `scope.run` installs handlers for a subcomputation and hides the scope's internal state, `scope.runWith` exposes it, and `scope.stateful` threads caller state across rotation. Credit: @vic (#8)
+- **Effectful-resume handlers** — a handler may return a computation as its `resume` value; its effects are spliced before the pending continuation. Fast path uses `resumeCompOrValue` which dispatches on whether the resume is a computation. Credit: @sini (#14)
+- **Description universe in the kernel** — `Desc` and `μ` as kernel primitives, with strict positivity guard, HOAS descriptor pieces (`descArg`, `descRec`, `descPi`, `descRet`), `descElim`/`descInd` elimination, and `interpHoas` for description interpretation
+- **Nat/List/Sum/Unit rebound as HOAS descriptions** — kernel representations live entirely in the description universe; no dedicated kernel nodes for each type
+- **Σ-η and ⊤-η conv rules** — `pair (fst p) (snd p) ≡ p` for Sigma and `tt ≡ _` for Unit, at the kernel conversion level
+- **`bind.*` operators** — `bindAttrs`, `bindFx`, `bindFn` for monadic composition over attrset projections, computations, and Kleisli arrows. Credit: @vic (#12)
+- **`state.update`** — effectful state transformer obeying `get >>= f >>= ({s, v}: put s >> pure v)`. Credit: @vic (#15)
+- **`isComp`** — tag-based predicate on the computation ADT boundary. Credit: @vic (#13)
+- **Pull-request CI** (`.github/workflows/flake-check.yml`) — runs `nix flake check -L` on PR events. Credit: @vic (#16)
 - **CI and release badges** on the README
 
 ### Fixed
 
-- **`effectRotateSlow` now splices computation resumes correctly.**
-  When the depth ≥ 500 fast-to-slow threshold was crossed and a handler
-  returned a computation as its `resume`, the slow path previously used
-  `resumeWithQueue`, which treats the resume as a plain value. For the
-  common case of an Identity continuation queue this wrapped the
-  computation in `pure`, short-circuiting the loop with the inner
-  effects unrun. Swap to `resumeCompOrValue` to match the fast path.
-  Regression test: `effectRotationSlowPathEffectfulResume`.
+- **`effectRotateSlow` now splices computation resumes correctly.** When the depth ≥ 500 fast-to-slow threshold was crossed and a handler returned a computation as its `resume`, the slow path previously used `resumeWithQueue`, which treats the resume as a plain value. For the common case of an Identity continuation queue this wrapped the computation in `pure`, short-circuiting the loop with the inner effects unrun. Swap to `resumeCompOrValue` to match the fast path. Regression test: `effectRotationSlowPathEffectfulResume`.
 
 ### Changed
 
-- **README** — rewritten intro, new `## Features` section covering
-  effects-layer and MLTT kernel capabilities, old "No handler layering"
-  limitation removed (superseded by `fx.effects.scope`), old "single
-  source of truth" paragraph refocused on the real underlying
-  limitation (`Certified` carries a Boolean witness, not an
-  inhabitation proof)
+- **README** — rewritten intro, new `## Features` section covering effects-layer and MLTT kernel capabilities, old "No handler layering" limitation removed (superseded by `fx.effects.scope`), old "single source of truth" paragraph refocused on the real underlying limitation (`Certified` carries a Boolean witness, not an inhabitation proof)
 
 ## [0.6.0] - 2026-04-14
 

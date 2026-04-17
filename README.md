@@ -110,6 +110,16 @@ Everything runs at `nix eval` time.
 - **Inductive types via a description universe** — `Desc` and `μ` as
   kernel primitives; `Nat`, `List`, `Sum`, and `Unit` rebuilt as HOAS
   descriptions on top, so further inductives don't require kernel changes
+- **Datatype macro layer** — declare single- or multi-constructor
+  datatypes directly in HOAS with `datatype` / `datatypeP` + `field`,
+  `fieldD`, `piField`, `piFieldD`, `recField`. Dependent fields see
+  prior fields by name (`prev.op`, `prev.comp`), poly parameters thread
+  through a `paramPi` binder. Chains of saturated or linear-recursive
+  constructors flatten to flat `desc-con` terms at elaboration time,
+  so 5000-element lists type-check without blowing the stack.
+  `Nat`, `List`, and `Sum` are themselves built through the macro;
+  user datatypes use exactly the same surface
+  (see [`apps/category-theory/`](apps/category-theory/) for a guided tour)
 - **Refinement types** — narrow any type with a predicate;
   combinators `allOf`, `anyOf`, `negate`; helpers `positive`,
   `nonNegative`, `inRange`, `nonEmpty`, `matching`
@@ -134,10 +144,23 @@ Everything runs at `nix eval` time.
 
 ### Applications
 
-- **Category theory library** (`apps/category-theory/`) — formally verified
-  `add` with commutativity, `Monoid` and `Category` as dependent sigmas
-  with `(Nat, +, 0)` as a shared instance, doubling endofunctor with
-  functoriality, Yoneda's lemma with round-trip proofs
+- **Category theory library** (`apps/category-theory/`) — a guided tour
+  of the MLTT kernel and the datatype macro layer. Five chapters that
+  build on each other:
+  1. `combinators.nix` — `sym`/`trans`/`cong` derived from `J`.
+  2. `arithmetic.nix` — `add` on `Nat` with seven verified properties
+     including commutativity.
+  3. `algebra.nix` — `Monoid` and `Category` as macro-generated
+     datatypes (single-constructor, named fields, dependent law
+     fields); instances `natAddMonoid` and `natCategory`; the
+     theorem that composition in `natCategory` is commutative,
+     stated through `natCategory.comp`.
+  4. `functor.nix` — `MonoidHom` and `Functor` as two more macro
+     datatypes; the doubling map packaged as both a monoid
+     homomorphism (`doubleHom`) and an endofunctor on `natCategory`
+     (`doubleFunctor`), showing the same map through two lenses.
+  5. `yoneda.nix` — Yoneda's lemma as an equivalence of types, with
+     both round-trip proofs (by J-based path induction).
 - **Expression interpreter and build simulator** (`apps/interp/`,
   `apps/build-sim/`) — effect-layer benchmarks at scale
 

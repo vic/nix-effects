@@ -373,6 +373,35 @@ let
     let result = vDescElimF fuel (mkAllMotive D') allOnRet allOnArg allOnRec allOnPi D;
     in vAppF fuel (vAppF fuel result P) d;
 
+  # linearProfile D — recognise the "linear recursive" description shape
+  # that the desc-con trampoline decomposes layer-by-layer. Returns either
+  # null (non-linear; trampoline declines) or [{ S = VDesc; }]_{i=1..n},
+  # the list of data-field types preceding the single rec tail, iff
+  # D = descArg S_1 (_. descArg S_2 (_. … descRec descRet)) for some n ≥ 0.
+  #
+  # Nat's succ-branch description `descRec descRet` has profile `[]`;
+  # List's cons-branch `descArg elem (_. descRec descRet)` has profile
+  # `[{ S = elem; }]`; Tree's `descRec (descRec descRet)` has profile `null`
+  # (the inner descRec's body is descRec, not descRet).
+  #
+  # Closures under VDescArg are instantiated at V.vTt as a dummy. Linear
+  # macro-emitted datatypes have constant-in-their-argument closures, so
+  # the instantiation is faithful. Dependent shapes either terminate with
+  # a non-linear tail (null result) or carry dependent S types — users of
+  # the profile treat S as the expected type for that field position, which
+  # is correct iff the closure is constant.
+  linearProfileF = fuel: D:
+    let
+      go = node: acc:
+        if node.tag == "VDescArg" then
+          let subD = instantiateF fuel node.T vTt; in
+          go subD (acc ++ [{ S = node.S; }])
+        else if node.tag == "VDescRec" then
+          if node.D.tag == "VDescRet" then acc
+          else null
+        else null;
+    in go D [];
+
   # -- everywhere computation: everywhere D P ih d (derived from descElim) --
   # Maps the induction function over recursive positions in the data.
 
@@ -550,38 +579,50 @@ let
     else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.D)
     else if t == "mu" then vMu (ev tm.D)
     # desc-con — trampolined for deep recursive chains (5000+).
-    # Peels a homogeneous desc-con chain along its recursive position. Two
-    # payload shapes are recognized, sharing the outer D by reference:
+    # Peels a homogeneous desc-con chain along its recursive position.
+    # The outer D's false-branch shape drives decomposition: iff
+    # `linearProfile subFalse` is a list of n data-field types, each
+    # layer's payload is `pair false (pair f_1 (... (pair REC tt) ...))`
+    # with n heads and a rec tail. Non-linear shapes (tree, mutual
+    # recursion) fall through to per-layer evaluation.
     #
-    #   recursive-only: `pair false (pair TAIL tt)`
-    #   recursive+head: `pair false (pair HEAD (pair TAIL tt))`
-    #
-    # Canonical tag and tt subterms in peeled layers are reconstructed with
-    # `V.vFalse` / `V.vTt` without re-evaluation; the outer D and the base
-    # payload are evaluated once, and per-layer heads (for the second shape)
-    # are evaluated once each.
+    # D-sharing across layers: fast path is structural equality of the
+    # D subterm (holds when elaborate emits a shared dTm per chain, and
+    # when β-reducing macro-generated constructors under a shared param
+    # env); fallback is conv-equality of the evaluated D against the
+    # outer dVal.
     else if t == "desc-con" then
       let
+        dVal = ev tm.D;
+        subFalse =
+          if dVal.tag != "VDescArg" then null
+          else instantiateF f dVal.T vFalse;
+        profile = if subFalse == null then null else linearProfileF f subFalse;
+        nFields = if profile == null then 0 else builtins.length profile;
+        depth = builtins.length env;
+        sameD = d2Tm:
+          if d2Tm == tm.D then true
+          else fx.tc.conv.conv depth (evalF f env d2Tm) dVal;
+        walkPayload = payload:
+          if payload.tag != "pair" then null
+          else if payload.fst.tag != "false" then null
+          else
+            let
+              collect = i: p: acc:
+                if i == nFields then
+                  if p.tag != "pair" then null
+                  else if p.snd.tag != "tt" then null
+                  else if p.fst.tag != "desc-con" then null
+                  else { heads = acc; tail = p.fst; }
+                else
+                  if p.tag != "pair" then null
+                  else collect (i + 1) p.snd (acc ++ [p.fst]);
+            in collect 0 payload.snd [];
         peel = node:
-          if node.tag != "desc-con" then null
-          else if node.D != tm.D then null
-          else let d = node.d; in
-            if d.tag != "pair" then null
-            else if d.fst.tag != "false" then null
-            else let inner = d.snd; in
-              if inner.tag != "pair" then null
-              else if inner.snd.tag == "tt" then
-                let rec_ = inner.fst; in
-                if rec_.tag != "desc-con" then null
-                else if rec_.D != tm.D then null
-                else { tail = rec_; heads = [ ]; }
-              else if inner.snd.tag == "pair"
-                   && inner.snd.snd.tag == "tt" then
-                let rec_ = inner.snd.fst; in
-                if rec_.tag != "desc-con" then null
-                else if rec_.D != tm.D then null
-                else { tail = rec_; heads = [ inner.fst ]; }
-              else null;
+          if profile == null then null
+          else if node.tag != "desc-con" then null
+          else if !(sameD node.D) then null
+          else walkPayload node.d;
         # Integer key is sufficient for dedup. `peel` is O(1) field
         # inspection into the already-concrete `tm`; no deferred work
         # accumulates on `val`, so the trampoline.nix deepSeq defense is
@@ -597,21 +638,18 @@ let
         base = (builtins.elemAt chain n).val;
       in if n > f then throw "normalization budget exceeded"
       else let
-        dVal = ev tm.D;
         baseVal = vDescCon dVal (evalF (f - n) env base.d);
       in builtins.foldl' (acc: i:
         let
           layer = (builtins.elemAt chain (n - 1 - i)).val;
           peeled = peel layer;
           heads = peeled.heads;
-        in
-        if heads == [ ]
-        then vDescCon dVal (vPair vFalse (vPair acc vTt))
-        else
-          let headVal = evalF (f - n + i) env (builtins.head heads); in
-          vDescCon dVal
-            (vPair vFalse
-              (vPair headVal (vPair acc vTt)))
+          headVals = map (h: evalF (f - n + i) env h) heads;
+          buildInner = hs: innerTail:
+            if hs == [] then innerTail
+            else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
+        in vDescCon dVal
+             (vPair vFalse (buildInner headVals (vPair acc vTt)))
       ) baseVal (builtins.genList (x: x) n)
     else if t == "desc-ind" then
       vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.scrut)
@@ -660,6 +698,7 @@ let
   interp = interpF defaultFuel;
   idx = idxF defaultFuel;
   allTy = allTyF defaultFuel;
+  linearProfile = linearProfileF defaultFuel;
 
 in mk {
   doc = ''
@@ -702,7 +741,7 @@ in mk {
   value = {
     inherit eval evalF instantiate;
     inherit vApp vFst vSnd vNatElim vBoolElim vListElim vAbsurd vSumElim vJ vDescInd;
-    inherit vDescElim interp idx allTy;
+    inherit vDescElim interp idx allTy linearProfile;
   };
   tests = let
     T = fx.tc.term;
@@ -1131,6 +1170,44 @@ in mk {
         r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat T.mkNat) T.mkZero step nat1000);
       in r.tag;
       expected = "VSucc";
+    };
+
+    # -- Linear profile classifier (feeds the desc-con trampoline peel) --
+    # Nat's succ-branch description: descRec descRet → Just [] (0 data fields).
+    "linearProfile-nat-shape" = {
+      expr = let
+        D = eval [] (T.mkDescRec T.mkDescRet);
+      in linearProfile D;
+      expected = [];
+    };
+    # List's cons-branch description: descArg nat (_. descRec descRet) → Just [nat].
+    "linearProfile-list-shape-length" = {
+      expr = let
+        D = eval [] (T.mkDescArg T.mkNat (T.mkDescRec T.mkDescRet));
+      in builtins.length (linearProfile D);
+      expected = 1;
+    };
+    "linearProfile-list-shape-S" = {
+      expr = let
+        D = eval [] (T.mkDescArg T.mkNat (T.mkDescRec T.mkDescRet));
+        profile = linearProfile D;
+      in (builtins.elemAt profile 0).S.tag;
+      expected = "VNat";
+    };
+    # Tree's node-branch description: descRec (descRec descRet) → null.
+    # The inner descRec's body is descRec (not descRet), violating the
+    # linear-recursion shape; peel declines, falls through.
+    "linearProfile-tree-shape-declines" = {
+      expr = let
+        D = eval [] (T.mkDescRec (T.mkDescRec T.mkDescRet));
+      in linearProfile D;
+      expected = null;
+    };
+    # descRet directly (no rec) — also non-linear for trampoline purposes
+    # (there's no recursion to peel).
+    "linearProfile-ret-declines" = {
+      expr = linearProfile (eval [] T.mkDescRet);
+      expected = null;
     };
   };
 }

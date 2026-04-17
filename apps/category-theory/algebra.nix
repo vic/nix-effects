@@ -1,125 +1,179 @@
-# Algebraic structures: Monoid and Category as dependent types.
+# Algebraic structures as macro-generated datatypes.
 #
-# Types:
-#   MonoidOf(A) — carrier A with op, e, assoc, lid, rid
-#   CategoryTy  — small category: Obj, Hom, id, comp, lid, rid, assoc
+# Each structure is a single-constructor datatype with named fields. Later
+# fields depend on earlier ones through `fieldD`, so algebraic laws
+# reference prior structure by name (`prev.op`, `prev.id`, `prev.comp`)
+# instead of peeking into nested Σ-projections.
 #
-# Instances:
-#   natAddMonoid  : MonoidOf(Nat)       — (Nat, add, 0)
-#   natCategory   : CategoryTy          — one-object category from the Nat monoid
+# The family of types:
+#   MonoidOf A         — (op, e, assoc, lid, rid) over A.
+#   CategoryOf Obj Hom — (id, comp, lid, rid, assoc) over (Obj, Hom).
 #
-# Theorem:
-#   compComm : ∀(f g : Nat). add(g,f) = add(f,g)
-#   Morphism composition in natCategory is commutative (the endomorphism
-#   monoid is abelian). Follows directly from addComm.
+# The family of instances:
+#   natAddMonoid : MonoidOf Nat            — (Nat, +, 0).
+#   natCategory  : CategoryOf Unit natHom  — one-object category whose
+#                                            hom-set is (Nat, +, 0).
+#
+# Each instance is a Nix record exposing both the HOAS components (so
+# downstream modules can refer to `.op`, `.comp`, etc. by name) and the
+# bundled (ty, impl) pair that the kernel checks.
+#
+# The single non-trivial theorem lives here because it is categorical in
+# flavour: composition in `natCategory` is commutative. The proof is one
+# line once the instance exists — `annAddComm` gives exactly the witness
+# that `comp` needs.
+#
+# A note on macro design: `Obj` and `Hom` are `datatypeP` parameters, not
+# in-constructor data fields. The macro encodes data fields via kernel
+# `descArg`, which only holds small types (`S : U 0`). A `U 0`-valued or
+# `Π Obj. Π Obj. U 0`-valued field would live at `U 1` and so cannot be
+# a description argument. Parameters thread through a plain Π-binder
+# (`paramPi`), where no such restriction applies. This is the general
+# recipe for datatypes that carry universe-level structure.
 { prelude, arithmetic }:
 
 let
-  inherit (prelude) H verify Nat U0 Unit Eq Refl Pi Sig lam app pair;
+  inherit (prelude) H verify Nat U0 Unit Eq Refl Pi lam app;
   inherit (arithmetic)
     addImpl
     addAssocImpl addLeftZeroImpl addRightZeroImpl
     annAddRightZero annAddAssoc annAddComm;
   inherit (prelude) addHoas;
 
+  # -- Monoid -------------------------------------------------------------
+
+  # Monoid over A: five fields (op, e, assoc, lid, rid).
+  MonoidDT = H.datatypeP "Monoid" [{ name = "A"; kind = U0; }] (ps:
+    let A = builtins.elemAt ps 0; in [
+      (H.con "mk" [
+        (H.field "op" (Pi "_" A (_: Pi "_" A (_: A))))
+        (H.field "e" A)
+        (H.fieldD "assoc" (prev:
+          Pi "x" A (x: Pi "y" A (y: Pi "z" A (z:
+            Eq A
+              (app (app prev.op (app (app prev.op x) y)) z)
+              (app (app prev.op x) (app (app prev.op y) z)))))))
+        (H.fieldD "lid" (prev:
+          Pi "x" A (x:
+            Eq A (app (app prev.op prev.e) x) x)))
+        (H.fieldD "rid" (prev:
+          Pi "x" A (x:
+            Eq A (app (app prev.op x) prev.e) x)))
+      ])
+    ]);
+
+  # -- Category -----------------------------------------------------------
+
+  # Category over (Obj, Hom): five fields (id, comp, lid, rid, assoc).
+  CategoryDT = H.datatypeP "Category"
+    [ { name = "Obj"; kind = U0; }
+      { name = "Hom"; kind = ms:
+          let Obj = builtins.elemAt ms 0;
+          in Pi "_" Obj (_: Pi "_" Obj (_: U0)); }
+    ]
+    (ps: let Obj = builtins.elemAt ps 0; Hom = builtins.elemAt ps 1; in [
+      (H.con "mk" [
+        (H.field "id" (Pi "a" Obj (a: app (app Hom a) a)))
+        (H.fieldD "comp" (_prev:
+          Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c:
+            Pi "_" (app (app Hom b) c) (_:
+            Pi "_" (app (app Hom a) b) (_:
+              app (app Hom a) c)))))))
+        (H.fieldD "lid" (prev:
+          Pi "a" Obj (a: Pi "b" Obj (b:
+            Pi "f" (app (app Hom a) b) (f:
+              Eq (app (app Hom a) b)
+                (app (app (app (app (app prev.comp a) a) b) f) (app prev.id a))
+                f)))))
+        (H.fieldD "rid" (prev:
+          Pi "a" Obj (a: Pi "b" Obj (b:
+            Pi "f" (app (app Hom a) b) (f:
+              Eq (app (app Hom a) b)
+                (app (app (app (app (app prev.comp a) b) b) (app prev.id b)) f)
+                f)))))
+        (H.fieldD "assoc" (prev:
+          Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c: Pi "d" Obj (d:
+            Pi "f" (app (app Hom a) b) (f:
+              Pi "g" (app (app Hom b) c) (g:
+                Pi "h" (app (app Hom c) d) (h:
+                  Eq (app (app Hom a) d)
+                    (app (app (app (app (app prev.comp a) b) d)
+                      (app (app (app (app (app prev.comp b) c) d) h) g)) f)
+                    (app (app (app (app (app prev.comp a) c) d)
+                      h)
+                      (app (app (app (app (app prev.comp a) b) c) g) f)))))))))))
+      ])
+    ]);
+
 in rec {
 
-  # -- Monoid(A) --
+  inherit MonoidDT CategoryDT;
+
+  # Type constructors.
+  #   MonoidOf A         = μ of the Monoid description, applied to A.
+  #   CategoryOf Obj Hom = μ of the Category description, applied to
+  #                        the object sort and the hom family.
+  MonoidOf = A: app MonoidDT.T A;
+  CategoryOf = Obj: Hom: app (app CategoryDT.T Obj) Hom;
+
+  # -- The monoid (Nat, +, 0) -------------------------------------------
+
+  # Components exposed by name so functor.nix can reference them
+  # uniformly (e.g. `natAddMonoid.op` instead of `addImpl`).
+  natAddMonoid = rec {
+    A     = Nat;
+    op    = addImpl;
+    e     = H.zero;
+    assoc = addAssocImpl;
+    lid   = addLeftZeroImpl;
+    rid   = addRightZeroImpl;
+
+    ty   = MonoidOf A;
+    impl = builtins.foldl' app MonoidDT.mk [ A op e assoc lid rid ];
+  };
+
+  # -- The one-object category over Nat ---------------------------------
   #
-  # Σ(op : A → A → A).
-  # Σ(e  : A).
-  # Σ(assoc : ∀x y z. op(op(x,y),z) = op(x,op(y,z))).
-  # Σ(lid   : ∀x. op(e,x) = x).
-  #   (rid   : ∀x. op(x,e) = x)
-  MonoidOf = A:
-    Sig "op" (Pi "_" A (_: Pi "_" A (_: A))) (op:
-      Sig "e" A (e:
-        Sig "assoc" (Pi "x" A (x: Pi "y" A (y: Pi "z" A (z:
-          Eq A
-            (app (app op (app (app op x) y)) z)
-            (app (app op x) (app (app op y) z)))))) (_:
-          Sig "lid" (Pi "x" A (x: Eq A (app (app op e) x) x)) (_:
-            Pi "x" A (x: Eq A (app (app op x) e) x)))));
-
-  natAddMonoidTy = MonoidOf Nat;
-
-  natAddMonoidImpl =
-    pair addImpl
-      (pair H.zero
-        (pair addAssocImpl
-          (pair addLeftZeroImpl addRightZeroImpl)));
-
-  natAddMonoid = verify natAddMonoidTy natAddMonoidImpl;
-
-  # -- Category --
+  #   Obj = Unit          (one object)
+  #   Hom _ _ = Nat        (morphisms are naturals)
+  #   id _ = 0             (identity is zero)
+  #   comp _ _ _ g f = g+f (composition is addition)
   #
-  # Σ(Obj  : U₀).
-  # Σ(Hom  : Obj → Obj → U₀).
-  # Σ(id   : ∀a. Hom(a,a)).
-  # Σ(comp : ∀a b c. Hom(b,c) → Hom(a,b) → Hom(a,c)).
-  # Σ(lid  : ∀a b. ∀f:Hom(a,b). comp(a,a,b,f,id(a)) = f).
-  # Σ(rid  : ∀a b. ∀f:Hom(a,b). comp(a,b,b,id(b),f) = f).
-  #   (assoc: ∀a b c d. ∀f g h. comp(a,b,d,comp(b,c,d,h,g),f) = comp(a,c,d,h,comp(a,b,c,g,f)))
-  CategoryTy =
-    Sig "Obj" U0 (Obj:
-      Sig "Hom" (Pi "_" Obj (_: Pi "_" Obj (_: U0))) (Hom:
-        Sig "id" (Pi "a" Obj (a: app (app Hom a) a)) (id_:
-          Sig "comp" (Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c:
-            Pi "g" (app (app Hom b) c) (g:
-              Pi "f" (app (app Hom a) b) (f:
-                app (app Hom a) c)))))) (comp:
-            Sig "lid" (Pi "a" Obj (a: Pi "b" Obj (b:
-              Pi "f" (app (app Hom a) b) (f:
-                Eq (app (app Hom a) b)
-                  (app (app (app (app (app comp a) a) b) f) (app id_ a))
-                  f)))) (_:
-              Sig "rid" (Pi "a" Obj (a: Pi "b" Obj (b:
-                Pi "f" (app (app Hom a) b) (f:
-                  Eq (app (app Hom a) b)
-                    (app (app (app (app (app comp a) b) b) (app id_ b)) f)
-                    f)))) (_:
-                Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c: Pi "d" Obj (d:
-                  Pi "f" (app (app Hom a) b) (f:
-                    Pi "g" (app (app Hom b) c) (g:
-                      Pi "h" (app (app Hom c) d) (h:
-                        Eq (app (app Hom a) d)
-                          (app (app (app (app (app comp a) b) d)
-                            (app (app (app (app (app comp b) c) d) h) g)) f)
-                          (app (app (app (app (app comp a) c) d)
-                            h)
-                            (app (app (app (app (app comp a) b) c) g) f))
-                      )))))))))))));
+  # All three laws transfer from arithmetic:
+  #   lid   : f · id = f   ≡  f + 0 = f       (addRightZero)
+  #   rid   : id · f = f   ≡  0 + f = f       (refl — left zero is computational)
+  #   assoc : h · (g · f) = (h · g) · f       (addAssoc, re-associated)
+  natCategory = rec {
+    Obj   = Unit;
+    Hom   = lam "_" Unit (_: lam "_" Unit (_: Nat));
+    id_   = lam "_" Unit (_: H.zero);
+    comp  = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
+              lam "g" Nat (g: lam "f" Nat (f: addHoas g f)))));
+    lid   = lam "_" Unit (_: lam "_" Unit (_:
+              lam "f" Nat (f: app annAddRightZero f)));
+    rid   = lam "_" Unit (_: lam "_" Unit (_:
+              lam "f" Nat (_: Refl)));
+    assoc = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
+              lam "f" Nat (f: lam "g" Nat (g: lam "h" Nat (h:
+                app (app (app annAddAssoc h) g) f)))))));
 
-  # One-object category (Nat, add, 0).
-  # Obj = Unit, Hom(_,_) = Nat, id(_) = 0, comp(_,_,_,g,f) = add(g,f).
-  # Laws transfer from arithmetic proofs:
-  #   lid:   add(f, 0) = f             (addRightZero)
-  #   rid:   add(0, f) = f             (free by computation)
-  #   assoc: add(add(h,g), f) = add(h, add(g, f))  (addAssoc)
-  natCategoryImpl =
-    pair Unit
-      (pair (lam "_" Unit (_: lam "_" Unit (_: Nat)))
-        (pair (lam "_" Unit (_: H.zero))
-          (pair (lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
-                  lam "g" Nat (g: lam "f" Nat (f: addHoas g f))))))
-            (pair
-              (lam "_" Unit (_: lam "_" Unit (_:
-                lam "f" Nat (f: app annAddRightZero f))))
-              (pair
-                (lam "_" Unit (_: lam "_" Unit (_:
-                  lam "f" Nat (_: Refl))))
-                (lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
-                  lam "f" Nat (f: lam "g" Nat (g: lam "h" Nat (h:
-                    app (app (app annAddAssoc h) g) f)))))))))))));
+    ty   = CategoryOf Obj Hom;
+    impl = builtins.foldl' app CategoryDT.mk
+             [ Obj Hom id_ comp lid rid assoc ];
+  };
 
-  natCategory = verify CategoryTy natCategoryImpl;
-
-  # -- Theorem: composition is commutative --
+  # -- Composition in natCategory is commutative ------------------------
   #
-  # In our one-object category, comp(g,f) = add(g,f).
-  # This theorem says add(g,f) = add(f,g) — the endomorphism monoid is abelian.
-  compCommTy = Pi "f" Nat (f: Pi "g" Nat (g:
-    Eq Nat (addHoas g f) (addHoas f g)));
+  # Stated through `natCategory.comp` so the type reads as a statement
+  # about morphisms in the category, not about raw `add`. Both sides
+  # β-reduce to `add g f = add f g`; the proof is `addComm` at those
+  # arguments.
+  compCommTy =
+    let O = natCategory.Obj; in
+    Pi "f" Nat (f: Pi "g" Nat (g:
+      Eq Nat
+        (app (app (app (app (app natCategory.comp O) O) O) g) f)
+        (app (app (app (app (app natCategory.comp O) O) O) f) g)));
 
   compCommImpl = lam "f" Nat (f: lam "g" Nat (g:
     app (app annAddComm g) f));

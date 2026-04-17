@@ -1,13 +1,23 @@
-# Arithmetic on natural numbers with verified proofs.
+# Addition on Nat with its seven fundamental verified properties.
 #
-# Functions:
-#   add : Nat → Nat → Nat
+# Two of the lemmas are free by computation — the definition of `add`
+# reduces the left-hand side to the right-hand side, so `refl` suffices.
+# The remaining five theorems come from induction on a Nat argument; the
+# step case invariably uses `congSucc` (from prelude) to push the
+# induction hypothesis through a `succ`. `addComm` combines everything:
+# it is proved by induction on `m`, with `addRightZero` as the base case
+# witness and `addRightSucc` as the step-case rewrite.
 #
-# Lemmas (free by computation — proved by refl):
+# Later files (`algebra.nix`, `functor.nix`) consume the `ann*` forms
+# of these lemmas — the HOAS term annotated with its type — so that
+# proofs built on top of them stay inferable wherever they appear
+# inside a larger term.
+#
+# Lemmas (free by computation):
 #   addLeftZero  : ∀n. add(0, n) = n
 #   addSucc      : ∀m n. add(S(m), n) = S(add(m, n))
 #
-# Theorems (proved by induction):
+# Theorems (by induction):
 #   addRightZero : ∀n. add(n, 0) = n
 #   addAssoc     : ∀x y z. add(add(x,y), z) = add(x, add(y,z))
 #   addRightSucc : ∀m n. add(m, S(n)) = S(add(m, n))

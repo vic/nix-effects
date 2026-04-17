@@ -1,22 +1,40 @@
-# Category theory library — verified proofs from the MLTT kernel
+# Category theory library — a guided tour of the MLTT kernel.
 #
-# Every theorem is type-checked at Nix eval time. If evaluation completes,
-# the proofs are correct. Extracted functions are callable Nix values.
+# Every theorem in this library is type-checked by the kernel at Nix
+# evaluation time. If evaluation completes, the proofs are correct.
+# Extracted functions are callable Nix values.
 #
-# Modules:
-#   combinators  — sym, trans, cong (derived from J elimination)
-#   arithmetic   — add with 7 verified properties including commutativity
-#   algebra      — Monoid, Category types; (Nat,+,0) instances
-#   functor      — doubling endofunctor with functoriality proof
-#   yoneda       — Yoneda's lemma with both round-trip proofs
+# The modules are arranged so that each chapter builds on the previous
+# one. Read them in order:
 #
-# Test:
-#   nix-instantiate --eval --strict --expr \
-#     'let fx = import ./nix/nix-effects {}; in (import ./nix/nix-effects/apps/category-theory { inherit fx; }).tests.allPass'
+#   1. combinators.nix — sym, trans, cong derived from J.
+#   2. arithmetic.nix  — `add` on Nat with seven verified properties
+#                        (left/right zero, assoc, succ shifts, comm).
+#   3. algebra.nix     — Monoid and Category as macro-generated
+#                        datatypes (single constructor, named fields,
+#                        dependent law fields). Instances
+#                        `natAddMonoid : MonoidOf Nat` and
+#                        `natCategory : CategoryOf Unit natHom`.
+#                        Closes with the theorem that composition in
+#                        `natCategory` is commutative.
+#   4. functor.nix     — MonoidHom and Functor as two more macro
+#                        datatypes. The doubling map is packaged as
+#                        `doubleHom` (a monoid homomorphism) and
+#                        `doubleFunctor` (an endofunctor on
+#                        `natCategory`) — the same map seen through two
+#                        equivalent lenses.
+#   5. yoneda.nix      — Yoneda's lemma in the types-as-groupoids form,
+#                        with both the evaluate/lift round-trips.
 #
-# Use:
-#   nix-instantiate --eval --strict --expr \
-#     'let fx = import ./nix/nix-effects {}; in (import ./nix/nix-effects/apps/category-theory { inherit fx; }).api.add 3 5'
+# Test everything:
+#   nix eval --impure --expr \
+#     'let fx = import ./nix/nix-effects {};
+#      in (import ./nix/nix-effects/apps/category-theory { inherit fx; }).tests.allPass'
+#
+# Call the extracted add:
+#   nix eval --impure --expr \
+#     'let fx = import ./nix/nix-effects {};
+#      in (import ./nix/nix-effects/apps/category-theory { inherit fx; }).api.add 3 5'
 { fx }:
 
 let
@@ -24,7 +42,7 @@ let
   combinators = import ./combinators.nix { inherit prelude; };
   arithmetic  = import ./arithmetic.nix { inherit prelude; };
   algebra     = import ./algebra.nix { inherit prelude arithmetic; };
-  functor     = import ./functor.nix { inherit prelude arithmetic; };
+  functor     = import ./functor.nix { inherit prelude arithmetic algebra; };
   yoneda      = import ./yoneda.nix { inherit prelude; };
 
   H = prelude.H;
@@ -45,8 +63,10 @@ in rec {
     inherit (arithmetic) add addLeftZero addRightZero addSucc addAssoc
                          addRightSucc addComm;
 
-    # Algebraic structures
-    inherit (algebra) natAddMonoid natCategory compComm;
+    # Algebraic structures (compComm is an extractable equality proof;
+    # the instances themselves are packaged HOAS records exposed under
+    # `.hoas.natAddMonoid` / `.hoas.natCategory`).
+    inherit (algebra) compComm;
 
     # Functor
     inherit (functor) double preserveId preserveComp;
@@ -67,10 +87,10 @@ in rec {
       addAssocTy addAssocImpl
       addRightSuccTy addRightSuccImpl
       addCommTy addCommImpl;
-    inherit (algebra) MonoidOf natAddMonoidTy natAddMonoidImpl
-                      CategoryTy natCategoryImpl
+    inherit (algebra) MonoidOf CategoryOf natAddMonoid natCategory
                       compCommTy compCommImpl;
-    inherit (functor) doubleTy doubleImpl
+    inherit (functor) MonoidHomOf FunctorOf doubleHom doubleFunctor
+                      doubleTy doubleImpl
                       preserveIdTy preserveIdImpl
                       preserveCompTy preserveCompImpl;
     inherit (yoneda) yonedaEvalTy yonedaEvalImpl
@@ -99,14 +119,19 @@ in rec {
     addComm      = checks arithmetic.addCommTy arithmetic.addCommImpl;
 
     # Algebraic structures
-    natAddMonoid = checks algebra.natAddMonoidTy algebra.natAddMonoidImpl;
-    natCategory  = checks algebra.CategoryTy algebra.natCategoryImpl;
+    natAddMonoid = checks algebra.natAddMonoid.ty algebra.natAddMonoid.impl;
+    natCategory  = checks algebra.natCategory.ty  algebra.natCategory.impl;
     compComm     = checks algebra.compCommTy algebra.compCommImpl;
 
-    # Functor
+    # Functor — the extracted map and its laws at raw arithmetic
     double       = checks functor.doubleTy functor.doubleImpl;
     preserveId   = checks functor.preserveIdTy functor.preserveIdImpl;
     preserveComp = checks functor.preserveCompTy functor.preserveCompImpl;
+
+    # Functor — the same map packaged as a monoid homomorphism
+    # and as a categorical endofunctor
+    doubleHom     = checks functor.doubleHom.ty     functor.doubleHom.impl;
+    doubleFunctor = checks functor.doubleFunctor.ty functor.doubleFunctor.impl;
 
     # Yoneda's lemma
     yonedaEval = checks yoneda.yonedaEvalTy yoneda.yonedaEvalImpl;
@@ -125,6 +150,7 @@ in rec {
       && addRightZero && addAssoc && addRightSucc && addComm
       && natAddMonoid && natCategory && compComm
       && double && preserveId && preserveComp
+      && doubleHom && doubleFunctor
       && yonedaEval && yonedaLift && evalLift && liftEval
       && addComputes && addComm7_3 && doubleComputes;
   };
