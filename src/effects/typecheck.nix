@@ -1,6 +1,6 @@
 # nix-effects typecheck: Reusable typeCheck effect handlers
 #
-# Bridges the type system (Phase 3) with the effect system (Phase 4).
+# Bridges the type system with the effect system.
 # Type validation sends typeCheck effects; these handlers interpret them.
 #
 # The typeCheck effect carries: { type, context, value }

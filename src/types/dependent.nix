@@ -187,9 +187,9 @@ let
         # elaborateType do structural auto-detection.
         approximate = kernelType == null;
         # Guard: null for all Pi types. When kernelType is explicit, the
-        # opaque lambda check (domain match + isFunction) strictly subsumes
-        # the old isFunction guard. When kernelType is omitted (approximate,
-        # H.function_), kernelDecide checks isFunction via elaboration.
+        # opaque lambda check (domain match + isFunction) covers guarding.
+        # When kernelType is omitted (approximate, H.function_),
+        # kernelDecide checks isFunction via elaboration.
         guard = null;
         universe = universe;
       } // {

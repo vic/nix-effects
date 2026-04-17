@@ -1,0 +1,672 @@
+# HOAS → Tm elaboration. `elaborate : Int → HoasTree → Tm` walks the
+# intermediate HOAS tree built by the combinators / macro layer and emits
+# de Bruijn indexed kernel terms. Binding chains (pi/sigma/lam/let), succ
+# chains, and cons chains trampoline via `genericClosure` for stack safety
+# to 8000+ depth. Macro-constructor applications route through
+# `tryFlattenCtorChain` before the regular `app` case, collapsing
+# saturated `dt-ctor-mono` / `dt-ctor-poly` spines into flat `desc-con`
+# Tms.
+#
+# Also provides `checkHoas` / `inferHoas` wrappers around the kernel
+# checker and the `natLit` helper for building S^n(zero).
+{ self, fx, ... }:
+
+let
+  T = fx.tc.term;
+  E = fx.tc.eval;
+  CH = fx.tc.check;
+
+  # List helpers — inline `take`/`drop` so this module does not need to
+  # pull in nixpkgs `lib`.
+  _listTake = n: xs:
+    builtins.genList (i: builtins.elemAt xs i)
+      (if n > builtins.length xs then builtins.length xs else n);
+  _listDrop = n: xs:
+    let len = builtins.length xs; in
+    if n >= len then []
+    else builtins.genList (i: builtins.elemAt xs (n + i)) (len - n);
+
+  # Peel an app-spine: walk outward while the node is an HOAS `app`,
+  # returning `{ head; args = [arg_inner, ..., arg_outer]; }`. Bounded by
+  # the ctor's nParams + nFields per call site (3 for ListDT.cons) — no
+  # long recursion.
+  peelAppSpine = node: args:
+    if builtins.isAttrs node && node ? _htag && node._htag == "app"
+    then peelAppSpine node.fn ([ node.arg ] ++ args)
+    else { head = node; inherit args; };
+
+  # Tm-level tag encoding: wrap `payloadTm` with the ctor's bool-tag
+  # prefix committing at index i out of n constructors. Structurally
+  # mirrors the HOAS `encodeTag` but operates on elaborated terms.
+  encodeTagTm = i: n: payloadTm:
+    if n == 1 then payloadTm
+    else if i == 0 then T.mkPair T.mkTrue payloadTm
+    else T.mkPair T.mkFalse (encodeTagTm (i - 1) (n - 1) payloadTm);
+
+  # Classify a field list into a chain-flatten profile, or null if
+  # neither shape applies.
+  #   - "saturated": all fields are plain data (no rec). Emits a single
+  #     flat `desc-con` whose payload is the right-nested pair of the
+  #     data field Tms terminated with `tt`. No chain-walking.
+  #   - "recursive": exactly one rec at the tail, every other field data.
+  #     Walks a chain along the rec arg via `genericClosure` and emits a
+  #     layered `desc-con` pyramid with a shared dTm across layers.
+  # A trailing-rec ctor with zero data fields (e.g. `succ`, whose single
+  # field is `rec`) is classified as "recursive" with `nData = 0`. A ctor
+  # with zero fields is handled separately at the `tryFlattenCtorChain`
+  # poly-branch via the `mono._htag == "desc-con"` short-circuit; both
+  # profiles require `n >= 1` here.
+  ctorShape = fields:
+    let
+      n = builtins.length fields;
+      initsAllData = nInits:
+        builtins.foldl'
+          (ok: j: ok && (builtins.elemAt fields j).kind == "data")
+          true
+          (builtins.genList (x: x) nInits);
+      allData = n >= 1 && initsAllData n;
+      lastRec =
+        n >= 1
+        && (builtins.elemAt fields (n - 1)).kind == "rec"
+        && initsAllData (n - 1);
+    in
+      if lastRec then { kind = "recursive"; }
+      else if allData then { kind = "saturated"; }
+      else null;
+
+  # Macro-constructor chain flattening.
+  #
+  # The datatype macro emits fielded constructor terms as curried
+  # λ-cascades wrapped in `ann`. A deeply-applied chain (e.g. a
+  # 5000-element cons list) would elaborate to a 5000-deep `app`-tree Tm,
+  # which blows the C++ stack on `infer`'s linear recursion.
+  # `tryFlattenCtorChain` peels spines whose head is tagged
+  # `dt-ctor-mono` or `dt-ctor-poly` and emits a flat `desc-con` Tm — a
+  # single layer for non-recursive ctors (sum's `inl`/`inr`), a
+  # `genericClosure`-walked pyramid for the list/nat-style `recursive`
+  # shape.
+  #
+  # Chain-flatten precondition: one of two shapes per `ctorShape`:
+  #   - "saturated": every field is `data`. Emits one flat `desc-con`.
+  #   - "recursive": exactly one `rec` at the tail, every other field
+  #     `data`. Aligns with the kernel's desc-con trampoline acceptance
+  #     condition via `linearProfile`. Walks the chain along the rec tail.
+  # Zero-field constructors never produce a `dt-ctor-mono` node — mkCtor
+  # returns a plain `desc-con` HOAS with the tag-encoded payload baked
+  # in. The poly-branch of `tryFlattenCtorChain` elaborates that mono
+  # directly. Ctors outside either shape (tree's `node` with two recs,
+  # dataD/piD-dependent fields) decline and the fallback
+  # `ann (lam-cascade)` path handles the application normally.
+  tryFlattenCtorChain = depth: h:
+    let
+      outer = peelAppSpine h [];
+      head = outer.head;
+      args = outer.args;
+    in
+      if !(builtins.isAttrs head && head ? _htag) then null
+      else if head._htag == "dt-ctor-mono" then
+        flattenCtor depth head null [] args
+      else if head._htag == "dt-ctor-poly" then
+        let nP = head.nParams; in
+        if builtins.length args < nP then null
+        else
+          let
+            paramArgs = _listTake nP args;
+            fieldArgs = _listDrop nP args;
+            mono = head.monoAt paramArgs;
+          in
+            if !(builtins.isAttrs mono) || !(mono ? _htag) then null
+            # Fielded ctors: mono is a `dt-ctor-mono` node; pass to the
+            # shape-classified flattener.
+            else if mono._htag == "dt-ctor-mono"
+            then flattenCtor depth mono head paramArgs fieldArgs
+            # Zero-field ctors: `mkCtor` returns a plain `desc-con` HOAS
+            # (no lam cascade, no tag). Elaborating it directly yields a
+            # flat `desc-con` Tm with the parameter-instantiated D baked
+            # in.
+            else if mono._htag == "desc-con"
+                 && builtins.length fieldArgs == 0
+            then elaborate depth mono
+            else null
+      else null;
+
+  # Chain-flatten dispatcher. `polyHead` is non-null for poly chains
+  # (used in the recursive branch to verify each successor layer uses
+  # the *same* poly ctor with the *same* param args; structural `==` on
+  # HOAS param args suffices because the test site passes the same
+  # references at every layer).
+  flattenCtor = depth: mono: polyHead: paramArgs: fieldArgs:
+    let
+      nFields = mono.nFields;
+      shape = ctorShape mono.fields;
+    in
+    if builtins.length fieldArgs != nFields || shape == null then null
+    else let
+      dTm = elaborate depth mono.dHoas;
+      ctorIdx = mono.ctorIndex;
+      nCtors = mono.nCtors;
+    in
+    if shape.kind == "saturated" then
+      # No recursion: build one payload from the data field Tms.
+      #   descCon dTm (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} tt) …))))
+      let
+        dataTms = map (a: elaborate depth a) fieldArgs;
+        payload = builtins.foldl'
+          (acc: j:
+            let d = builtins.elemAt dataTms (nFields - 1 - j);
+            in T.mkPair d acc)
+          T.mkTt
+          (builtins.genList (x: x) nFields);
+      in T.mkDescCon dTm (encodeTagTm ctorIdx nCtors payload)
+    else
+      let
+        recArg = builtins.elemAt fieldArgs (nFields - 1);
+        nonRecArgs = _listTake (nFields - 1) fieldArgs;
+        # Try to recognise a successor layer: peel an app spine and
+        # require the head to be the same `mono` (mono chains) or the
+        # same `polyHead` with matching paramArgs (poly chains).
+        tryNext = node:
+          let sp = peelAppSpine node []; in
+          if !(builtins.isAttrs sp.head && sp.head ? _htag) then null
+          else if polyHead == null then
+            if sp.head != mono then null
+            else if builtins.length sp.args != nFields then null
+            else {
+              nonRec = _listTake (nFields - 1) sp.args;
+              recArg = builtins.elemAt sp.args (nFields - 1);
+            }
+          else
+            if sp.head != polyHead then null
+            else if builtins.length sp.args != polyHead.nParams + nFields then null
+            else
+              let pa = _listTake polyHead.nParams sp.args;
+                  fa = _listDrop polyHead.nParams sp.args; in
+              if pa != paramArgs then null
+              else {
+                nonRec = _listTake (nFields - 1) fa;
+                recArg = builtins.elemAt fa (nFields - 1);
+              };
+        # Start the chain at the given layer. `genericClosure` walks
+        # along `recArg` as long as each tail peels to a matching
+        # successor.
+        startLayer = { inherit nonRecArgs recArg; };
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = startLayer; }];
+          operator = item:
+            let nxt = tryNext item.val.recArg; in
+            if nxt == null then []
+            else [{ key = item.key + 1;
+                    val = { nonRecArgs = nxt.nonRec; recArg = nxt.recArg; }; }];
+        };
+        nLayers = builtins.length chain;
+        innermost = (builtins.elemAt chain (nLayers - 1)).val;
+        # Base: whatever the innermost layer's `recArg` points to (the
+        # first non-chain-successor tail). Elaborated normally — may be
+        # a zero-field ctor application, a neutral, or anything else.
+        baseTm = elaborate depth innermost.recArg;
+        # Build one layer's payload given elaborated non-rec field args
+        # and a tail accumulator. Field args are prepended in declaration
+        # order, the accumulator sits at the rec position, terminated
+        # with `tt`:
+        #   encodeTag i n (pair f_0 (pair f_1 (… (pair acc tt) …))).
+        buildLayer = nonRecTms: accTm:
+          let
+            innerMost = T.mkPair accTm T.mkTt;
+            payloadInner = builtins.foldl'
+              (acc: j:
+                let f = builtins.elemAt nonRecTms (builtins.length nonRecTms - 1 - j);
+                in T.mkPair f acc)
+              innerMost
+              (builtins.genList (x: x) (builtins.length nonRecTms));
+          in T.mkDescCon dTm (encodeTagTm ctorIdx nCtors payloadInner);
+      in
+      # Fold inward-to-outward: step idx=0 wraps baseTm with the
+      # innermost layer's non-rec args, step idx=1 with the next layer
+      # out, etc.
+      builtins.foldl' (acc: idx:
+        let
+          layer = (builtins.elemAt chain (nLayers - 1 - idx)).val;
+          nonRecTms = map (a: elaborate depth a) layer.nonRecArgs;
+        in buildLayer nonRecTms acc
+      ) baseTm (builtins.genList (x: x) nLayers);
+
+  # Elaboration: HOAS tree → de Bruijn Tm.
+  #
+  # elaborate : Int → HoasTree → Tm
+  # depth tracks the current binding depth. When we encounter a binding
+  # combinator (pi, lam, sigma, let), we:
+  #   1. Apply the stored Nix lambda to mkMarker(depth)
+  #   2. Recursively elaborate the resulting body at depth+1
+  #   3. Markers with level L become T.mkVar(depth - L - 1)
+  elaborate = depth: h:
+    # Marker → variable
+    if self.isMarker h then
+      T.mkVar (depth - h.level - 1)
+
+    else if !(builtins.isAttrs h) || !(h ? _htag) then
+      let
+        desc =
+          if builtins.isAttrs h
+          then "attrset with keys: ${builtins.concatStringsSep ", " (builtins.attrNames h)}"
+          else builtins.typeOf h;
+      in throw "hoas.elaborate: not an HOAS node (${desc})"
+
+    else let t = h._htag; in
+
+    # -- Types --
+    # `nat` is the description-based fixpoint `mu natDesc`. natDescTm is
+    # pre-elaborated at module scope to avoid re-elaborating on every use.
+    if t == "nat" then T.mkMu self.natDescTm
+    else if t == "bool" then T.mkBool
+    else if t == "unit" then T.mkUnit
+    else if t == "void" then T.mkVoid
+    else if t == "string" then T.mkString
+    else if t == "int" then T.mkInt
+    else if t == "float" then T.mkFloat
+    else if t == "attrs" then T.mkAttrs
+    else if t == "path" then T.mkPath
+    else if t == "function" then T.mkFunction
+    else if t == "any" then T.mkAny
+    else if t == "U" then T.mkU h.level
+    # `listOf elem` is the description-based fixpoint `mu (listDesc elem)`.
+    else if t == "list" then T.mkMu (elaborate depth (self.listDesc h.elem))
+    # `sum l r` is the description-based fixpoint `mu (sumDesc l r)`.
+    else if t == "sum" then T.mkMu (elaborate depth (self.sumDesc h.left h.right))
+    else if t == "eq" then
+      T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
+
+    # -- Compound types (sugar for nested sigma/sum) --
+    else if t == "record" then
+      let
+        fields = h.fields;
+        n = builtins.length fields;
+      in if n == 0 then T.mkUnit
+         else if n == 1 then elaborate depth (builtins.head fields).type
+         else
+           # Build nested Sigma right-to-left: Σ(f1:T1).Σ(f2:T2)...Tn
+           let lastType = elaborate depth (builtins.elemAt fields (n - 1)).type;
+           in builtins.foldl' (acc: i:
+             let field = builtins.elemAt fields (n - 2 - i); in
+             T.mkSigma field.name (elaborate depth field.type) acc
+           ) lastType (builtins.genList (x: x) (n - 1))
+
+    else if t == "maybe" then
+      # Sum(inner, Unit) — Left = value present, Right = null.
+      # Delegates to the `sum` branch so the description-based
+      # representation (μ(sumDesc l r)) is used uniformly with
+      # `inl`/`inr` values.
+      elaborate depth (self.sum h.inner self.unit)
+
+    else if t == "variant" then
+      let
+        branches = h.branches;
+        n = builtins.length branches;
+      in if n == 0 then T.mkVoid
+         else if n == 1 then elaborate depth (builtins.head branches).type
+         else
+           # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn)).
+           # Delegates to the `sum` branch so the nesting is in the
+           # description representation, matching the inl/inr injection
+           # shape.
+           let lastType = (builtins.elemAt branches (n - 1)).type;
+           in elaborate depth (builtins.foldl' (acc: i:
+             let branch = builtins.elemAt branches (n - 2 - i); in
+             self.sum branch.type acc
+           ) lastType (builtins.genList (x: x) (n - 1)))
+
+    # -- Binding types and terms (trampolined for deep nesting) --
+    else if t == "pi" || t == "sigma" || t == "lam" || t == "let" then
+      let
+        # Peel nested binding forms iteratively via genericClosure
+        chain = builtins.genericClosure {
+          startSet = [{ key = depth; val = h; }];
+          operator = item:
+            let node = item.val; in
+            if builtins.isAttrs node && node ? _htag &&
+               (let nt = node._htag; in nt == "pi" || nt == "sigma" || nt == "lam" || nt == "let")
+            then
+              let marker = self.mkMarker item.key; in
+              [{ key = item.key + 1; val = node.body marker; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+        baseElab = elaborate (depth + n) base;
+      in
+      builtins.foldl' (acc: i:
+        let
+          item = builtins.elemAt chain (n - 1 - i);
+          node = item.val;
+          d = item.key;
+          nt = node._htag;
+        in
+        if nt == "pi" then T.mkPi node.name (elaborate d node.domain) acc
+        else if nt == "sigma" then T.mkSigma node.name (elaborate d node.fst) acc
+        else if nt == "lam" then T.mkLam node.name (elaborate d node.domain) acc
+        else T.mkLet node.name (elaborate d node.type) (elaborate d node.val) acc
+      ) baseElab (builtins.genList (x: x) n)
+
+    # -- Non-binding terms --
+    # `zero` = `descCon natDesc (pair true_ tt)` — tag true selects the
+    # zero-constructor branch of natDesc, whose payload type is ⊤.
+    else if t == "zero" then
+      T.mkDescCon self.natDescTm (T.mkPair T.mkTrue T.mkTt)
+    # `succ n` = `descCon natDesc (pair false_ (pair n tt))` — tag false
+    # selects the succ-constructor branch, payload is the recursive arg
+    # paired with ⊤. Trampolined for deep naturals (5000+).
+    else if t == "succ" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = h; }];
+          operator = item:
+            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "succ"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in builtins.foldl' (acc: _:
+        T.mkDescCon self.natDescTm (T.mkPair T.mkFalse (T.mkPair acc T.mkTt))
+      ) (elaborate depth base) (builtins.genList (x: x) n)
+    else if t == "true" then T.mkTrue
+    else if t == "false" then T.mkFalse
+    else if t == "tt" then T.mkTt
+    else if t == "refl" then T.mkRefl
+    else if t == "string-lit" then T.mkStringLit h.value
+    else if t == "int-lit" then T.mkIntLit h.value
+    else if t == "float-lit" then T.mkFloatLit h.value
+    else if t == "attrs-lit" then T.mkAttrsLit
+    else if t == "path-lit" then T.mkPathLit
+    else if t == "fn-lit" then T.mkFnLit
+    else if t == "any-lit" then T.mkAnyLit
+    # `nil elem` = `descCon (listDesc elem) (pair true tt)` — tag true
+    # selects the nil-constructor branch, whose payload type is ⊤.
+    else if t == "nil" then
+      T.mkDescCon (elaborate depth (self.listDesc h.elem))
+        (T.mkPair T.mkTrue T.mkTt)
+    # `cons elem head tail` = `descCon (listDesc elem)
+    #   (pair false (pair head (pair tail tt)))`. Trampolined for deep
+    # lists (5000+ elements). The outer `listDesc elem` is elaborated
+    # ONCE for the chain and the resulting D is shared across all
+    # emitted desc-cons; the check/eval desc-con trampolines use
+    # reference identity on D to peel homogeneous chains. The chain peel
+    # stops at the first tail that is not a `cons` HOAS node (typically
+    # `nil`, which elaborates via its own branch); that base is
+    # elaborated recursively with the outer depth.
+    else if t == "cons" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = h; }];
+          operator = item:
+            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "cons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+        # All layers share the outer element type. Elaborate listDesc once.
+        dTm = elaborate depth (self.listDesc h.elem);
+      in builtins.foldl' (acc: i:
+        let node = (builtins.elemAt chain (n - 1 - i)).val; in
+        T.mkDescCon dTm
+          (T.mkPair T.mkFalse
+            (T.mkPair (elaborate depth node.head)
+              (T.mkPair acc T.mkTt)))
+      ) (elaborate depth base) (builtins.genList (x: x) n)
+    else if t == "pair" then
+      T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
+    # `inl l r a` = `descCon (sumDesc l r) (pair true (pair a tt))` — tag
+    # true selects the inl-constructor branch, whose payload type is
+    # Σ(a:l).⊤.
+    else if t == "inl" then
+      T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
+        (T.mkPair T.mkTrue (T.mkPair (elaborate depth h.term) T.mkTt))
+    # `inr l r b` = `descCon (sumDesc l r) (pair false (pair b tt))` — tag
+    # false selects the inr-constructor branch, whose payload type is
+    # Σ(b:r).⊤.
+    else if t == "inr" then
+      T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
+        (T.mkPair T.mkFalse (T.mkPair (elaborate depth h.term) T.mkTt))
+    else if t == "opaque-lam" then
+      T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
+    else if t == "str-eq" then
+      T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
+    else if t == "absurd" then
+      T.mkAbsurd (elaborate depth h.type) (elaborate depth h.term)
+    else if t == "ann" then
+      T.mkAnn (elaborate depth h.term) (elaborate depth h.type)
+    # Macro constructor fallback: elaborate as the annotated lam cascade.
+    # Saturated chain applications are recognised in the `app` branch
+    # below and emit flat `desc-con` Tms without touching this branch.
+    else if t == "dt-ctor-mono" then elaborate depth h.fallback
+    else if t == "dt-ctor-poly" then elaborate depth h.fallback
+    # `app` tries flat-chain flattening for saturated macro-constructor
+    # applications first. Non-chain applications fall through to the
+    # regular `mkApp (elab fn) (elab arg)`.
+    else if t == "app" then
+      let flat = tryFlattenCtorChain depth h; in
+      if flat != null then flat
+      else T.mkApp (elaborate depth h.fn) (elaborate depth h.arg)
+    else if t == "fst" then T.mkFst (elaborate depth h.pair)
+    else if t == "snd" then T.mkSnd (elaborate depth h.pair)
+
+    # -- Descriptions --
+    else if t == "desc" then T.mkDesc
+    else if t == "desc-ret" then T.mkDescRet
+    else if t == "desc-arg" then
+      let marker = self.mkMarker depth;
+      in T.mkDescArg (elaborate depth h.S) (elaborate (depth + 1) (h.body marker))
+    else if t == "desc-rec" then T.mkDescRec (elaborate depth h.D)
+    else if t == "desc-pi" then
+      T.mkDescPi (elaborate depth h.S) (elaborate depth h.D)
+    else if t == "mu" then T.mkMu (elaborate depth h.D)
+    else if t == "desc-con" then
+      T.mkDescCon (elaborate depth h.D) (elaborate depth h.d)
+    else if t == "desc-ind" then
+      T.mkDescInd (elaborate depth h.D) (elaborate depth h.motive)
+        (elaborate depth h.step) (elaborate depth h.scrut)
+    else if t == "desc-elim" then
+      T.mkDescElim (elaborate depth h.motive) (elaborate depth h.onRet)
+        (elaborate depth h.onArg) (elaborate depth h.onRec)
+        (elaborate depth h.onPi) (elaborate depth h.scrut)
+
+    # -- Eliminators --
+    # `ind motive base step scrut` elaborates to `descInd natDesc motive
+    # step' scrut`, where step' adapts the (k, ih)→P(S k) protocol to
+    # descInd's (d : ⟦natDesc⟧μ, ih : All natDesc natDesc P d) → P(con d)
+    # protocol. The adapter dispatches on `fst d : Bool` via boolElim:
+    #   b = true  (zero):  r : ⊤,           rih : ⊤           → `base`
+    #   b = false (succ):  r : μnat × ⊤,    rih : P(fst r) × ⊤ → `step (fst r) (fst rih)`
+    # Conv obligations: r ≡ tt (⊤-η) on the zero branch; r ≡ (fst r, tt)
+    # on the succ branch (Σ-η + ⊤-η). Both rules live in conv.nix.
+    else if t == "nat-elim" then
+      let
+        inherit (self) lam forall app fst_ snd_ let_ nat bool desc unit u
+                        descRet descRec descInd descCon boolElim mu pair
+                        natDesc interpHoas allHoas;
+        motive = h.motive;
+        base = h.base;
+        step = h.step;
+        subDesc = b: boolElim (lam "_" bool (_: desc))
+                              descRet
+                              (descRec descRet)
+                              b;
+        natRecRet = descRec descRet;
+        # Let-bind motive, base, step at their required types so their
+        # occurrences in the adapter body are VARs (inferable via
+        # lookupType — check.nix) rather than bare `lam`s (no infer
+        # rule). Lambdas are checkable-only in this bidirectional
+        # kernel; `let` is the canonical construct for making a
+        # checkable value available at inferable positions. Types pinned
+        # by the desc-ind check rule via the `ind` → `descInd` protocol
+        # translation:
+        #   P : nat → U(0)
+        #   B : P zero
+        #   S : Π(k:nat). P k → P (succ k)
+        # Conv obligations on the adapter body (⊤-η on zero branch,
+        # Σ-η + ⊤-η on succ branch) discharge via the conv.nix eta rules.
+        piMotiveTy = forall "_" nat (_: u 0);
+        body =
+          let_ "P" piMotiveTy motive (P:
+          let_ "B" (app P self.zero) base (base2:
+          let_ "S" (forall "k" nat (k:
+                    forall "_" (app P k) (_: app P (self.succ k)))) step (step2:
+            descInd natDesc P
+              (lam "d" (interpHoas natDesc (mu natDesc)) (d:
+               lam "ih" (allHoas natDesc natDesc P d) (ih:
+                 app (app
+                   (boolElim
+                      (lam "b" bool (b:
+                         forall "r" (interpHoas (subDesc b) (mu natDesc)) (r:
+                         forall "rih" (allHoas natDesc (subDesc b) P r) (_:
+                           app P (descCon natDesc (pair b r))))))
+                      (lam "r" unit (_:
+                       lam "rih" unit (_: base2)))
+                      (lam "r" (interpHoas natRecRet (mu natDesc)) (r:
+                       lam "rih" (allHoas natDesc natRecRet P r) (rih:
+                         app (app step2 (fst_ r)) (fst_ rih))))
+                      (fst_ d))
+                   (snd_ d))
+                   ih)))
+              h.scrut)));
+      in elaborate depth body
+    else if t == "bool-elim" then
+      T.mkBoolElim (elaborate depth h.motive) (elaborate depth h.onTrue)
+        (elaborate depth h.onFalse) (elaborate depth h.scrut)
+    # `listElim elem motive onNil onCons scrut` elaborates to
+    # `descInd (listDesc elem) motive step' scrut`, with an adapter that
+    # dispatches on the constructor tag `fst d : Bool` via boolElim:
+    #   b = true  (nil):  r : ⊤,                     rih : ⊤              → onNil
+    #   b = false (cons): r : Σ(h:elem).(μlist × ⊤), rih : P(fst(snd r))×⊤ →
+    #                         onCons (fst r) (fst (snd r)) (fst rih)
+    # motive/onNil/onCons are let-bound at their required types so their
+    # occurrences in the adapter body are VARs (inferable via
+    # lookupType) rather than bare lambdas (no infer rule). Conv
+    # obligations on the adapter body discharge via conv.nix's Σ-η and
+    # ⊤-η rules.
+    else if t == "list-elim" then
+      let
+        inherit (self) lam forall app fst_ snd_ let_ bool desc unit u
+                        descRet descRec descArg descInd descCon boolElim mu pair
+                        listOf listDesc nil cons interpHoas allHoas;
+        elem = h.elem;
+        motive = h.motive;
+        onNil = h.onNil;
+        onCons = h.onCons;
+        listDescElem = listDesc elem;
+        consRecRet = descArg elem (_: descRec descRet);
+        subDesc = b: boolElim (lam "_" bool (_: desc))
+                              descRet
+                              consRecRet
+                              b;
+        piMotiveTy = forall "_" (listOf elem) (_: u 0);
+        body =
+          let_ "P" piMotiveTy motive (P:
+          let_ "N" (app P (nil elem)) onNil (N:
+          let_ "C" (forall "h" elem (hVar:
+                    forall "t" (listOf elem) (tVar:
+                    forall "_" (app P tVar) (_:
+                      app P (cons elem hVar tVar))))) onCons (C:
+            descInd listDescElem P
+              (lam "d" (interpHoas listDescElem (mu listDescElem)) (d:
+               lam "ih" (allHoas listDescElem listDescElem P d) (ih:
+                 app (app
+                   (boolElim
+                      (lam "b" bool (b:
+                         forall "r" (interpHoas (subDesc b) (mu listDescElem)) (r:
+                         forall "rih" (allHoas listDescElem (subDesc b) P r) (_:
+                           app P (descCon listDescElem (pair b r))))))
+                      (lam "r" unit (_:
+                       lam "rih" unit (_: N)))
+                      (lam "r" (interpHoas consRecRet (mu listDescElem)) (r:
+                       lam "rih" (allHoas listDescElem consRecRet P r) (rih:
+                         app (app (app C (fst_ r)) (fst_ (snd_ r))) (fst_ rih))))
+                      (fst_ d))
+                   (snd_ d))
+                   ih)))
+              h.scrut)));
+      in elaborate depth body
+    # `sumElim left right motive onLeft onRight scrut` elaborates to
+    # `descInd (sumDesc left right) motive step' scrut`, with an adapter
+    # that dispatches on the constructor tag `fst d : Bool` via boolElim:
+    #   b = true  (inl): r : Σ(a:left).⊤,  rih : ⊤ → onLeft  (fst r)
+    #   b = false (inr): r : Σ(b:right).⊤, rih : ⊤ → onRight (fst r)
+    # Sum is non-recursive, so rih : ⊤ in BOTH branches (no `fst_ rih`
+    # to extract a recursive IH). motive/onLeft/onRight are let-bound
+    # at their required types so their occurrences in the adapter body
+    # are VARs (inferable via lookupType) rather than bare lambdas (no
+    # infer rule). Conv obligations (Σ-η + ⊤-η on both branches)
+    # discharge via conv.nix.
+    else if t == "sum-elim" then
+      let
+        inherit (self) lam forall app fst_ snd_ let_ bool desc unit u
+                        descRet descArg descInd descCon boolElim mu pair
+                        sum sumDesc inl inr interpHoas allHoas;
+        left = h.left;
+        right = h.right;
+        motive = h.motive;
+        onLeft = h.onLeft;
+        onRight = h.onRight;
+        sumDescLR = sumDesc left right;
+        leftArm = descArg left (_: descRet);
+        rightArm = descArg right (_: descRet);
+        subDesc = b: boolElim (lam "_" bool (_: desc))
+                              leftArm
+                              rightArm
+                              b;
+        piMotiveTy = forall "_" (sum left right) (_: u 0);
+        body =
+          let_ "P" piMotiveTy motive (P:
+          let_ "L" (forall "a" left (aVar: app P (inl left right aVar))) onLeft (L:
+          let_ "R" (forall "b" right (bVar: app P (inr left right bVar))) onRight (R:
+            descInd sumDescLR P
+              (lam "d" (interpHoas sumDescLR (mu sumDescLR)) (d:
+               lam "ih" (allHoas sumDescLR sumDescLR P d) (ih:
+                 app (app
+                   (boolElim
+                      (lam "b" bool (b:
+                         forall "r" (interpHoas (subDesc b) (mu sumDescLR)) (r:
+                         forall "rih" (allHoas sumDescLR (subDesc b) P r) (_:
+                           app P (descCon sumDescLR (pair b r))))))
+                      (lam "r" (interpHoas leftArm (mu sumDescLR)) (r:
+                       lam "rih" unit (_:
+                         app L (fst_ r))))
+                      (lam "r" (interpHoas rightArm (mu sumDescLR)) (r:
+                       lam "rih" unit (_:
+                         app R (fst_ r))))
+                      (fst_ d))
+                   (snd_ d))
+                   ih)))
+              h.scrut)));
+      in elaborate depth body
+    else if t == "j" then
+      T.mkJ (elaborate depth h.type) (elaborate depth h.lhs)
+        (elaborate depth h.motive) (elaborate depth h.base)
+        (elaborate depth h.rhs) (elaborate depth h.eq)
+
+    else throw "hoas.elaborate: unknown tag: ${t}";
+in {
+  scope = {
+    inherit elaborate;
+
+    # Elaborate from depth 0.
+    elab = elaborate 0;
+
+    # Elaborate type + term, then run the kernel checker.
+    checkHoas = hoasTy: hoasTm:
+      let
+        ty = self.elab hoasTy;
+        tm = self.elab hoasTm;
+        vTy = E.eval [] ty;
+      in CH.runCheck (CH.check CH.emptyCtx tm vTy);
+
+    inferHoas = hoasTm:
+      let tm = self.elab hoasTm;
+      in CH.runCheck (CH.infer CH.emptyCtx tm);
+
+    # Natural number literal helper — build S^n(zero).
+    natLit = n:
+      builtins.foldl' (acc: _: self.succ acc) self.zero (builtins.genList (x: x) n);
+  };
+  tests = {};
+}

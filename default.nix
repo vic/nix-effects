@@ -8,11 +8,28 @@
 let
   api = import ./src/api.nix { inherit lib; };
 
-  # -- readSrc: lightweight directory walker  --
+  # -- readSrc: directory walker --
   #
-  # Walk a directory, importing .nix files and recursing into subdirectories.
-  # Returns a tree of raw mk-wrapped results matching the namespace structure:
-  #   { kernel = <mk>; types = { foundation = <mk>; ... }; ... }
+  # For a directory without `module.nix`: auto-import `.nix` files as
+  # namespace entries, recurse into subdirectories as nested namespaces.
+  # Each leaf receives `{ fx, api, lib, ... }:` and returns `api.mk { doc;
+  # value; tests }`.
+  #
+  # For a directory with `module.nix`: treat as a split module. Build
+  # `self` as the disjoint-union fixpoint of sibling parts' `scope`
+  # attrsets. Build `partTests` similarly from parts' `tests`. Pass both
+  # to `module.nix`, which returns an `api.mk`-wrapped module. The walker
+  # does not post-process `module.nix`'s result.
+  #
+  # Each part receives `{ self, fx, api, lib, ... }:` and returns
+  # `{ scope; tests ? {} }`. `module.nix` receives `{ self, partTests,
+  # fx, api, lib, ... }:` and returns `api.mk { doc; value; tests }`.
+  # Cross-part references go through `self.<binding>`.
+  #
+  # Collisions (duplicate scope keys, duplicate test names) are hard
+  # errors — never silent merges. There is no priority system, no
+  # `mkDefault`/`mkForce`, no `options`. Each binding has exactly one
+  # definition site.
   readSrc = dir: ctx:
     let
       entries = builtins.readDir dir;
@@ -21,17 +38,54 @@ let
         type == "regular"
         && lib.hasSuffix ".nix" name
         && !(builtins.elem name excluded);
-      files = lib.foldlAttrs (acc: name: type:
-        if isNixFile name type
-        then acc // { ${lib.removeSuffix ".nix" name} = import (dir + "/${name}") ctx; }
-        else acc
-      ) {} entries;
-      dirs = lib.foldlAttrs (acc: name: type:
-        if type == "directory"
-        then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
-        else acc
-      ) {} entries;
-    in files // dirs;
+      isSplitModule = entries ? "module.nix";
+    in
+      if isSplitModule then
+        let
+          partNames = builtins.attrNames (lib.filterAttrs isNixFile entries);
+          importPart = n: s: import (dir + "/${n}") (ctx // { self = s; });
+
+          self = lib.fix (s:
+            builtins.foldl' (acc: n:
+              let
+                part = importPart n s;
+                scope = part.scope;
+                collisions = lib.intersectLists
+                               (builtins.attrNames acc)
+                               (builtins.attrNames scope);
+              in
+                if collisions != []
+                then throw "readSrc: ${toString dir}: duplicate binding(s) ${toString collisions}"
+                else acc // scope
+            ) {} partNames);
+
+          partTests = builtins.foldl' (acc: n:
+            let
+              part = importPart n self;
+              t = part.tests or {};
+              collisions = lib.intersectLists
+                             (builtins.attrNames acc)
+                             (builtins.attrNames t);
+            in
+              if collisions != []
+              then throw "readSrc: ${toString dir}: duplicate test name(s) ${toString collisions}"
+              else acc // t
+          ) {} partNames;
+        in
+          import (dir + "/module.nix") (ctx // { inherit self partTests; })
+      else
+        let
+          files = lib.foldlAttrs (acc: name: type:
+            if isNixFile name type
+            then acc // { ${lib.removeSuffix ".nix" name} = import (dir + "/${name}") ctx; }
+            else acc
+          ) {} entries;
+          dirs = lib.foldlAttrs (acc: name: type:
+            if type == "directory"
+            then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
+            else acc
+          ) {} entries;
+        in files // dirs;
 
   # -- Library fixpoint via lib.fix --
   #
