@@ -119,18 +119,20 @@ let
       conv d v1.type v2.type && conv d v1.lhs v2.lhs && conv d v1.rhs v2.rhs
 
     # Descriptions
-    else if t1 == "VDesc" && t2 == "VDesc" then true
-    else if t1 == "VDescRet" && t2 == "VDescRet" then true
+    else if t1 == "VDesc" && t2 == "VDesc" then conv d v1.I v2.I
+    else if t1 == "VDescRet" && t2 == "VDescRet" then conv d v1.j v2.j
     else if t1 == "VDescArg" && t2 == "VDescArg" then
       conv d v1.S v2.S
       && conv (d + 1) (E.instantiate v1.T (V.freshVar d))
                       (E.instantiate v2.T (V.freshVar d))
-    else if t1 == "VDescRec" && t2 == "VDescRec" then conv d v1.D v2.D
+    else if t1 == "VDescRec" && t2 == "VDescRec" then
+      conv d v1.j v2.j && conv d v1.D v2.D
     else if t1 == "VDescPi" && t2 == "VDescPi" then
-      conv d v1.S v2.S && conv d v1.D v2.D
-    else if t1 == "VMu" && t2 == "VMu" then conv d v1.D v2.D
+      conv d v1.S v2.S && conv d v1.f v2.f && conv d v1.D v2.D
+    else if t1 == "VMu" && t2 == "VMu" then
+      conv d v1.I v2.I && conv d v1.D v2.D && conv d v1.i v2.i
     else if t1 == "VDescCon" && t2 == "VDescCon" then
-      conv d v1.D v2.D && conv d v1.d v2.d
+      conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
 
     # Opaque lambda: identity on _fnBox (Nix attrset thunk identity) + structural piTy
     else if t1 == "VOpaqueLam" && t2 == "VOpaqueLam" then
@@ -177,7 +179,8 @@ let
       && conv d e1.rhs e2.rhs
     else if t1 == "EStrEq" then conv d e1.arg e2.arg
     else if t1 == "EDescInd" then
-      conv d e1.D e2.D && conv d e1.motive e2.motive && conv d e1.step e2.step
+      conv d e1.D e2.D && conv d e1.motive e2.motive
+      && conv d e1.step e2.step && conv d e1.i e2.i
     else if t1 == "EDescElim" then
       conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
       && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
@@ -506,58 +509,107 @@ in mk {
     };
 
     # Descriptions
-    "conv-desc" = { expr = conv 0 V.vDesc V.vDesc; expected = true; };
-    "conv-descret" = { expr = conv 0 V.vDescRet V.vDescRet; expected = true; };
+    "conv-desc" = { expr = conv 0 (V.vDesc V.vUnit) (V.vDesc V.vUnit); expected = true; };
+    "conv-desc-diff-I" = {
+      expr = conv 0 (V.vDesc V.vUnit) (V.vDesc V.vNat);
+      expected = false;
+    };
+    "conv-descret" = {
+      expr = conv 0 (V.vDescRet vTt) (V.vDescRet vTt);
+      expected = true;
+    };
+    "conv-descret-diff-j" = {
+      # Eta-unit aside: at j : Nat level, two distinct j's don't conv.
+      expr = conv 0 (V.vDescRet vZero) (V.vDescRet (V.vSucc vZero));
+      expected = false;
+    };
     "conv-descarg" = {
       expr = conv 0
-        (V.vDescArg vBool (mkClosure [] T.mkDescRet))
-        (V.vDescArg vBool (mkClosure [] T.mkDescRet));
+        (V.vDescArg vBool (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg vBool (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = true;
     };
     "conv-descarg-diff-S" = {
       expr = conv 0
-        (V.vDescArg vBool (mkClosure [] T.mkDescRet))
-        (V.vDescArg vNat (mkClosure [] T.mkDescRet));
+        (V.vDescArg vBool (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg vNat (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = false;
     };
     "conv-descrec" = {
-      expr = conv 0 (V.vDescRec V.vDescRet) (V.vDescRec V.vDescRet);
+      expr = conv 0
+        (V.vDescRec vTt (V.vDescRet vTt))
+        (V.vDescRec vTt (V.vDescRet vTt));
       expected = true;
     };
+    "conv-descrec-diff-j" = {
+      expr = conv 0
+        (V.vDescRec vZero (V.vDescRet vZero))
+        (V.vDescRec (V.vSucc vZero) (V.vDescRet vZero));
+      expected = false;
+    };
     "conv-descpi" = {
-      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vBool V.vDescRet);
+      expr = let f = V.vLam "_" vBool (mkClosure [] T.mkTt); in
+        conv 0
+          (V.vDescPi vBool f (V.vDescRet vTt))
+          (V.vDescPi vBool f (V.vDescRet vTt));
       expected = true;
     };
     "conv-descpi-diff-S" = {
-      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vNat V.vDescRet);
+      expr = let
+        f1 = V.vLam "_" vBool (mkClosure [] T.mkTt);
+        f2 = V.vLam "_" vNat (mkClosure [] T.mkTt);
+      in conv 0
+        (V.vDescPi vBool f1 (V.vDescRet vTt))
+        (V.vDescPi vNat f2 (V.vDescRet vTt));
       expected = false;
     };
     "conv-descpi-diff-D" = {
-      expr = conv 0 (V.vDescPi vBool V.vDescRet) (V.vDescPi vBool (V.vDescRec V.vDescRet));
+      expr = let f = V.vLam "_" vBool (mkClosure [] T.mkTt); in
+        conv 0
+          (V.vDescPi vBool f (V.vDescRet vTt))
+          (V.vDescPi vBool f (V.vDescRec vTt (V.vDescRet vTt)));
       expected = false;
     };
     "conv-mu" = {
-      expr = conv 0 (V.vMu V.vDescRet) (V.vMu V.vDescRet);
+      expr = conv 0
+        (V.vMu vUnit (V.vDescRet vTt) vTt)
+        (V.vMu vUnit (V.vDescRet vTt) vTt);
       expected = true;
     };
-    "conv-mu-diff" = {
-      expr = conv 0 (V.vMu V.vDescRet) (V.vMu (V.vDescRec V.vDescRet));
+    "conv-mu-diff-D" = {
+      expr = conv 0
+        (V.vMu vUnit (V.vDescRet vTt) vTt)
+        (V.vMu vUnit (V.vDescRec vTt (V.vDescRet vTt)) vTt);
+      expected = false;
+    };
+    "conv-mu-diff-i" = {
+      expr = conv 0
+        (V.vMu vNat (V.vDescRet vZero) vZero)
+        (V.vMu vNat (V.vDescRet vZero) (V.vSucc vZero));
+      expected = false;
+    };
+    "conv-mu-diff-I" = {
+      expr = conv 0
+        (V.vMu vUnit (V.vDescRet vTt) vTt)
+        (V.vMu vNat (V.vDescRet vTt) vTt);
       expected = false;
     };
     "conv-desccon" = {
-      expr = conv 0 (V.vDescCon V.vDescRet vTt) (V.vDescCon V.vDescRet vTt);
+      expr = conv 0
+        (V.vDescCon (V.vDescRet vTt) vTt vRefl)
+        (V.vDescCon (V.vDescRet vTt) vTt vRefl);
       expected = true;
     };
     "conv-ne-desc-ind" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ])
-        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ]);
+        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ])
+        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ]);
       expected = true;
     };
     "conv-ne-desc-ind-diff" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescInd V.vDescRet vNat vZero) ])
-        (vNe 0 [ (V.eDescInd V.vDescRet vBool vZero) ]);
+        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ])
+        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vBool vZero vTt) ]);
       expected = false;
     };
     "conv-ne-desc-elim" = {

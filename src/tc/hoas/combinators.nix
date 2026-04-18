@@ -127,18 +127,46 @@ in {
       { _htag = "j"; inherit type lhs motive base rhs; eq = eq_; };
 
     # Descriptions: types, constructors, and eliminators.
-    desc = { _htag = "desc"; };
-    mu = D: { _htag = "mu"; inherit D; };
+    #
+    # `descI`, `retI`, `recI`, `piI`, `muI` build `Desc I` / `μ I D i`
+    # directly. `desc`, `descRet`, `descRec`, `descPi`, `mu` are ⊤-slice
+    # aliases: `desc = descI unit`, `mu D i = muI unit D i`, etc. —
+    # type-level identities at the ⊤-slice.
+    #
+    # `descCon`, `descInd` match kernel arities exactly (3, 5): there is
+    # no ⊤-slice alias. At I=⊤, call sites write `self.tt` explicitly at
+    # the index position.
+    descI = I: { _htag = "desc"; inherit I; };
+    desc = self.descI self.unit;
 
-    descRet = { _htag = "desc-ret"; };
+    muI = I: D: i: { _htag = "mu"; inherit I D i; };
+    mu = D: i: self.muI self.unit D i;
+
+    retI = j: { _htag = "desc-ret"; inherit j; };
+    descRet = self.retI self.tt;
+
     # descArg S (b: T b) — T is a Nix function, b binds a fresh variable.
     descArg = S: T: { _htag = "desc-arg"; inherit S; body = T; };
-    descRec = D: { _htag = "desc-rec"; inherit D; };
-    descPi = S: D: { _htag = "desc-pi"; inherit S D; };
 
-    descCon = D: d: { _htag = "desc-con"; inherit D d; };
-    descInd = D: motive: step: scrut:
-      { _htag = "desc-ind"; inherit D motive step scrut; };
+    recI = j: D: { _htag = "desc-rec"; inherit j D; };
+    descRec = D: self.recI self.tt D;
+
+    piI = S: f: D: { _htag = "desc-pi"; inherit S f D; };
+    # The kernel `desc-pi` infer rule recovers I from the codomain of
+    # `tm.f`, so `f` must be inferable. A bare `lam` is checkable-only in
+    # the bidirectional kernel; the ⊤-slice alias therefore ann-wraps the
+    # constant index function against its explicit type `S → ⊤`, routing
+    # synthesis through CHECK where bare canonical forms are accepted.
+    descPi = S: D:
+      self.piI S
+        (self.ann (self.lam "_" S (_: self.tt))
+                  (self.forall "_" S (_: self.unit)))
+        D;
+
+    descCon = D: i: d: { _htag = "desc-con"; inherit D i d; };
+
+    descInd = D: motive: step: i: scrut:
+      { _htag = "desc-ind"; inherit D motive step i scrut; };
     descElim = motive: onRet: onArg: onRec: onPi: scrut:
       { _htag = "desc-elim"; inherit motive onRet onArg onRec onPi scrut; };
   };

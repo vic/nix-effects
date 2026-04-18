@@ -89,7 +89,7 @@ in {
       else if t == "VMu" then
         let
           D = tyVal.D;
-          fallback = H.mu (self.reifyDesc D);
+          fallback = H.mu (self.reifyDesc D) H.tt;
         in
           if D.tag != "VDescArg" then fallback
           else

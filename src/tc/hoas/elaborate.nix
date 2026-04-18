@@ -148,16 +148,18 @@ let
     in
     if shape.kind == "saturated" then
       # No recursion: build one payload from the data field Tms.
-      #   descCon dTm (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} tt) …))))
+      #   descCon dTm tt (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} refl) …))))
+      # The innermost payload component inhabits Eq I j i at the ret-leaf
+      # (I=⊤, j=i=tt): refl discharges the reflexive equality.
       let
         dataTms = map (a: elaborate depth a) fieldArgs;
         payload = builtins.foldl'
           (acc: j:
             let d = builtins.elemAt dataTms (nFields - 1 - j);
             in T.mkPair d acc)
-          T.mkTt
+          T.mkRefl
           (builtins.genList (x: x) nFields);
-      in T.mkDescCon dTm (encodeTagTm ctorIdx nCtors payload)
+      in T.mkDescCon dTm T.mkTt (encodeTagTm ctorIdx nCtors payload)
     else
       let
         recArg = builtins.elemAt fieldArgs (nFields - 1);
@@ -211,14 +213,16 @@ let
         #   encodeTag i n (pair f_0 (pair f_1 (… (pair acc tt) …))).
         buildLayer = nonRecTms: accTm:
           let
-            innerMost = T.mkPair accTm T.mkTt;
+            # The innermost pair terminator sits at the ret-leaf: its
+            # witness inhabits Eq I j i (refl at I=⊤).
+            innerMost = T.mkPair accTm T.mkRefl;
             payloadInner = builtins.foldl'
               (acc: j:
                 let f = builtins.elemAt nonRecTms (builtins.length nonRecTms - 1 - j);
                 in T.mkPair f acc)
               innerMost
               (builtins.genList (x: x) (builtins.length nonRecTms));
-          in T.mkDescCon dTm (encodeTagTm ctorIdx nCtors payloadInner);
+          in T.mkDescCon dTm T.mkTt (encodeTagTm ctorIdx nCtors payloadInner);
       in
       # Fold inward-to-outward: step idx=0 wraps baseTm with the
       # innermost layer's non-rec args, step idx=1 with the next layer
@@ -256,7 +260,7 @@ let
     # -- Types --
     # `nat` is the description-based fixpoint `mu natDesc`. natDescTm is
     # pre-elaborated at module scope to avoid re-elaborating on every use.
-    if t == "nat" then T.mkMu self.natDescTm
+    if t == "nat" then T.mkMu T.mkUnit self.natDescTm T.mkTt
     else if t == "bool" then T.mkBool
     else if t == "unit" then T.mkUnit
     else if t == "void" then T.mkVoid
@@ -268,10 +272,10 @@ let
     else if t == "function" then T.mkFunction
     else if t == "any" then T.mkAny
     else if t == "U" then T.mkU h.level
-    # `listOf elem` is the description-based fixpoint `mu (listDesc elem)`.
-    else if t == "list" then T.mkMu (elaborate depth (self.listDesc h.elem))
-    # `sum l r` is the description-based fixpoint `mu (sumDesc l r)`.
-    else if t == "sum" then T.mkMu (elaborate depth (self.sumDesc h.left h.right))
+    # `listOf elem` is the description-based fixpoint `mu (listDesc elem) tt`.
+    else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
+    # `sum l r` is the description-based fixpoint `mu (sumDesc l r) tt`.
+    else if t == "sum" then T.mkMu T.mkUnit (elaborate depth (self.sumDesc h.left h.right)) T.mkTt
     else if t == "eq" then
       T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
 
@@ -347,13 +351,15 @@ let
       ) baseElab (builtins.genList (x: x) n)
 
     # -- Non-binding terms --
-    # `zero` = `descCon natDesc (pair true_ tt)` — tag true selects the
-    # zero-constructor branch of natDesc, whose payload type is ⊤.
+    # `zero` = `descCon natDesc tt (pair true_ refl)` — tag true selects
+    # the zero-constructor branch of natDesc; ret-leaf payload inhabits
+    # Eq ⊤ tt tt via refl.
     else if t == "zero" then
-      T.mkDescCon self.natDescTm (T.mkPair T.mkTrue T.mkTt)
-    # `succ n` = `descCon natDesc (pair false_ (pair n tt))` — tag false
-    # selects the succ-constructor branch, payload is the recursive arg
-    # paired with ⊤. Trampolined for deep naturals (5000+).
+      T.mkDescCon self.natDescTm T.mkTt (T.mkPair T.mkTrue T.mkRefl)
+    # `succ n` = `descCon natDesc tt (pair false_ (pair n refl))` — tag
+    # false selects the succ-constructor branch, payload is the recursive
+    # arg paired with the ret-leaf refl. Trampolined for deep naturals
+    # (5000+).
     else if t == "succ" then
       let
         chain = builtins.genericClosure {
@@ -366,7 +372,7 @@ let
         n = builtins.length chain - 1;
         base = (builtins.elemAt chain n).val;
       in builtins.foldl' (acc: _:
-        T.mkDescCon self.natDescTm (T.mkPair T.mkFalse (T.mkPair acc T.mkTt))
+        T.mkDescCon self.natDescTm T.mkTt (T.mkPair T.mkFalse (T.mkPair acc T.mkRefl))
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "true" then T.mkTrue
     else if t == "false" then T.mkFalse
@@ -379,11 +385,12 @@ let
     else if t == "path-lit" then T.mkPathLit
     else if t == "fn-lit" then T.mkFnLit
     else if t == "any-lit" then T.mkAnyLit
-    # `nil elem` = `descCon (listDesc elem) (pair true tt)` — tag true
-    # selects the nil-constructor branch, whose payload type is ⊤.
+    # `nil elem` = `descCon (listDesc elem) tt (pair true refl)` — tag
+    # true selects the nil-constructor branch; ret-leaf payload is refl
+    # inhabiting Eq ⊤ tt tt.
     else if t == "nil" then
       T.mkDescCon (elaborate depth (self.listDesc h.elem))
-        (T.mkPair T.mkTrue T.mkTt)
+        T.mkTt (T.mkPair T.mkTrue T.mkRefl)
     # `cons elem head tail` = `descCon (listDesc elem)
     #   (pair false (pair head (pair tail tt)))`. Trampolined for deep
     # lists (5000+ elements). The outer `listDesc elem` is elaborated
@@ -408,25 +415,25 @@ let
         dTm = elaborate depth (self.listDesc h.elem);
       in builtins.foldl' (acc: i:
         let node = (builtins.elemAt chain (n - 1 - i)).val; in
-        T.mkDescCon dTm
+        T.mkDescCon dTm T.mkTt
           (T.mkPair T.mkFalse
             (T.mkPair (elaborate depth node.head)
-              (T.mkPair acc T.mkTt)))
+              (T.mkPair acc T.mkRefl)))
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "pair" then
       T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
-    # `inl l r a` = `descCon (sumDesc l r) (pair true (pair a tt))` — tag
-    # true selects the inl-constructor branch, whose payload type is
-    # Σ(a:l).⊤.
+    # `inl l r a` = `descCon (sumDesc l r) tt (pair true (pair a refl))` —
+    # tag true selects the inl-constructor branch; ret-leaf payload is
+    # refl inhabiting Eq ⊤ tt tt.
     else if t == "inl" then
       T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
-        (T.mkPair T.mkTrue (T.mkPair (elaborate depth h.term) T.mkTt))
-    # `inr l r b` = `descCon (sumDesc l r) (pair false (pair b tt))` — tag
-    # false selects the inr-constructor branch, whose payload type is
-    # Σ(b:r).⊤.
+        T.mkTt (T.mkPair T.mkTrue (T.mkPair (elaborate depth h.term) T.mkRefl))
+    # `inr l r b` = `descCon (sumDesc l r) tt (pair false (pair b refl))` —
+    # tag false selects the inr-constructor branch; ret-leaf payload is
+    # refl inhabiting Eq ⊤ tt tt.
     else if t == "inr" then
       T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
-        (T.mkPair T.mkFalse (T.mkPair (elaborate depth h.term) T.mkTt))
+        T.mkTt (T.mkPair T.mkFalse (T.mkPair (elaborate depth h.term) T.mkRefl))
     else if t == "opaque-lam" then
       T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
     else if t == "str-eq" then
@@ -451,194 +458,38 @@ let
     else if t == "snd" then T.mkSnd (elaborate depth h.pair)
 
     # -- Descriptions --
-    else if t == "desc" then T.mkDesc
-    else if t == "desc-ret" then T.mkDescRet
+    else if t == "desc" then T.mkDesc (elaborate depth h.I)
+    else if t == "desc-ret" then T.mkDescRet (elaborate depth h.j)
     else if t == "desc-arg" then
       let marker = self.mkMarker depth;
       in T.mkDescArg (elaborate depth h.S) (elaborate (depth + 1) (h.body marker))
-    else if t == "desc-rec" then T.mkDescRec (elaborate depth h.D)
+    else if t == "desc-rec" then
+      T.mkDescRec (elaborate depth h.j) (elaborate depth h.D)
     else if t == "desc-pi" then
-      T.mkDescPi (elaborate depth h.S) (elaborate depth h.D)
-    else if t == "mu" then T.mkMu (elaborate depth h.D)
+      T.mkDescPi (elaborate depth h.S) (elaborate depth h.f) (elaborate depth h.D)
+    else if t == "mu" then
+      T.mkMu (elaborate depth h.I) (elaborate depth h.D) (elaborate depth h.i)
     else if t == "desc-con" then
-      T.mkDescCon (elaborate depth h.D) (elaborate depth h.d)
+      T.mkDescCon (elaborate depth h.D) (elaborate depth h.i) (elaborate depth h.d)
     else if t == "desc-ind" then
       T.mkDescInd (elaborate depth h.D) (elaborate depth h.motive)
-        (elaborate depth h.step) (elaborate depth h.scrut)
+        (elaborate depth h.step) (elaborate depth h.i) (elaborate depth h.scrut)
     else if t == "desc-elim" then
       T.mkDescElim (elaborate depth h.motive) (elaborate depth h.onRet)
         (elaborate depth h.onArg) (elaborate depth h.onRec)
         (elaborate depth h.onPi) (elaborate depth h.scrut)
 
     # -- Eliminators --
-    # `ind motive base step scrut` elaborates to `descInd natDesc motive
-    # step' scrut`, where step' adapts the (k, ih)→P(S k) protocol to
-    # descInd's (d : ⟦natDesc⟧μ, ih : All natDesc natDesc P d) → P(con d)
-    # protocol. The adapter dispatches on `fst d : Bool` via boolElim:
-    #   b = true  (zero):  r : ⊤,           rih : ⊤           → `base`
-    #   b = false (succ):  r : μnat × ⊤,    rih : P(fst r) × ⊤ → `step (fst r) (fst rih)`
-    # Conv obligations: r ≡ tt (⊤-η) on the zero branch; r ≡ (fst r, tt)
-    # on the succ branch (Σ-η + ⊤-η). Both rules live in conv.nix.
-    else if t == "nat-elim" then
-      let
-        inherit (self) lam forall app fst_ snd_ let_ nat bool desc unit u
-                        descRet descRec descInd descCon boolElim mu pair
-                        natDesc interpHoas allHoas;
-        motive = h.motive;
-        base = h.base;
-        step = h.step;
-        subDesc = b: boolElim (lam "_" bool (_: desc))
-                              descRet
-                              (descRec descRet)
-                              b;
-        natRecRet = descRec descRet;
-        # Let-bind motive, base, step at their required types so their
-        # occurrences in the adapter body are VARs (inferable via
-        # lookupType — check.nix) rather than bare `lam`s (no infer
-        # rule). Lambdas are checkable-only in this bidirectional
-        # kernel; `let` is the canonical construct for making a
-        # checkable value available at inferable positions. Types pinned
-        # by the desc-ind check rule via the `ind` → `descInd` protocol
-        # translation:
-        #   P : nat → U(0)
-        #   B : P zero
-        #   S : Π(k:nat). P k → P (succ k)
-        # Conv obligations on the adapter body (⊤-η on zero branch,
-        # Σ-η + ⊤-η on succ branch) discharge via the conv.nix eta rules.
-        piMotiveTy = forall "_" nat (_: u 0);
-        body =
-          let_ "P" piMotiveTy motive (P:
-          let_ "B" (app P self.zero) base (base2:
-          let_ "S" (forall "k" nat (k:
-                    forall "_" (app P k) (_: app P (self.succ k)))) step (step2:
-            descInd natDesc P
-              (lam "d" (interpHoas natDesc (mu natDesc)) (d:
-               lam "ih" (allHoas natDesc natDesc P d) (ih:
-                 app (app
-                   (boolElim
-                      (lam "b" bool (b:
-                         forall "r" (interpHoas (subDesc b) (mu natDesc)) (r:
-                         forall "rih" (allHoas natDesc (subDesc b) P r) (_:
-                           app P (descCon natDesc (pair b r))))))
-                      (lam "r" unit (_:
-                       lam "rih" unit (_: base2)))
-                      (lam "r" (interpHoas natRecRet (mu natDesc)) (r:
-                       lam "rih" (allHoas natDesc natRecRet P r) (rih:
-                         app (app step2 (fst_ r)) (fst_ rih))))
-                      (fst_ d))
-                   (snd_ d))
-                   ih)))
-              h.scrut)));
-      in elaborate depth body
+    # `boolElim` is the only user-facing HOAS eliminator with its own tag:
+    # kernel `bool-elim` is used internally by descriptions and adapters
+    # and so stays reachable via this path. Nat/List/Sum eliminators route
+    # through the macro-generated `NatDT.elim` / `ListDT.elim` / `SumDT.elim`
+    # (see hoas/datatype.nix's dispatchStep), which produce `descInd`
+    # spines directly; no dedicated `nat-elim`/`list-elim`/`sum-elim` HOAS
+    # tag is emitted.
     else if t == "bool-elim" then
       T.mkBoolElim (elaborate depth h.motive) (elaborate depth h.onTrue)
         (elaborate depth h.onFalse) (elaborate depth h.scrut)
-    # `listElim elem motive onNil onCons scrut` elaborates to
-    # `descInd (listDesc elem) motive step' scrut`, with an adapter that
-    # dispatches on the constructor tag `fst d : Bool` via boolElim:
-    #   b = true  (nil):  r : ⊤,                     rih : ⊤              → onNil
-    #   b = false (cons): r : Σ(h:elem).(μlist × ⊤), rih : P(fst(snd r))×⊤ →
-    #                         onCons (fst r) (fst (snd r)) (fst rih)
-    # motive/onNil/onCons are let-bound at their required types so their
-    # occurrences in the adapter body are VARs (inferable via
-    # lookupType) rather than bare lambdas (no infer rule). Conv
-    # obligations on the adapter body discharge via conv.nix's Σ-η and
-    # ⊤-η rules.
-    else if t == "list-elim" then
-      let
-        inherit (self) lam forall app fst_ snd_ let_ bool desc unit u
-                        descRet descRec descArg descInd descCon boolElim mu pair
-                        listOf listDesc nil cons interpHoas allHoas;
-        elem = h.elem;
-        motive = h.motive;
-        onNil = h.onNil;
-        onCons = h.onCons;
-        listDescElem = listDesc elem;
-        consRecRet = descArg elem (_: descRec descRet);
-        subDesc = b: boolElim (lam "_" bool (_: desc))
-                              descRet
-                              consRecRet
-                              b;
-        piMotiveTy = forall "_" (listOf elem) (_: u 0);
-        body =
-          let_ "P" piMotiveTy motive (P:
-          let_ "N" (app P (nil elem)) onNil (N:
-          let_ "C" (forall "h" elem (hVar:
-                    forall "t" (listOf elem) (tVar:
-                    forall "_" (app P tVar) (_:
-                      app P (cons elem hVar tVar))))) onCons (C:
-            descInd listDescElem P
-              (lam "d" (interpHoas listDescElem (mu listDescElem)) (d:
-               lam "ih" (allHoas listDescElem listDescElem P d) (ih:
-                 app (app
-                   (boolElim
-                      (lam "b" bool (b:
-                         forall "r" (interpHoas (subDesc b) (mu listDescElem)) (r:
-                         forall "rih" (allHoas listDescElem (subDesc b) P r) (_:
-                           app P (descCon listDescElem (pair b r))))))
-                      (lam "r" unit (_:
-                       lam "rih" unit (_: N)))
-                      (lam "r" (interpHoas consRecRet (mu listDescElem)) (r:
-                       lam "rih" (allHoas listDescElem consRecRet P r) (rih:
-                         app (app (app C (fst_ r)) (fst_ (snd_ r))) (fst_ rih))))
-                      (fst_ d))
-                   (snd_ d))
-                   ih)))
-              h.scrut)));
-      in elaborate depth body
-    # `sumElim left right motive onLeft onRight scrut` elaborates to
-    # `descInd (sumDesc left right) motive step' scrut`, with an adapter
-    # that dispatches on the constructor tag `fst d : Bool` via boolElim:
-    #   b = true  (inl): r : Σ(a:left).⊤,  rih : ⊤ → onLeft  (fst r)
-    #   b = false (inr): r : Σ(b:right).⊤, rih : ⊤ → onRight (fst r)
-    # Sum is non-recursive, so rih : ⊤ in BOTH branches (no `fst_ rih`
-    # to extract a recursive IH). motive/onLeft/onRight are let-bound
-    # at their required types so their occurrences in the adapter body
-    # are VARs (inferable via lookupType) rather than bare lambdas (no
-    # infer rule). Conv obligations (Σ-η + ⊤-η on both branches)
-    # discharge via conv.nix.
-    else if t == "sum-elim" then
-      let
-        inherit (self) lam forall app fst_ snd_ let_ bool desc unit u
-                        descRet descArg descInd descCon boolElim mu pair
-                        sum sumDesc inl inr interpHoas allHoas;
-        left = h.left;
-        right = h.right;
-        motive = h.motive;
-        onLeft = h.onLeft;
-        onRight = h.onRight;
-        sumDescLR = sumDesc left right;
-        leftArm = descArg left (_: descRet);
-        rightArm = descArg right (_: descRet);
-        subDesc = b: boolElim (lam "_" bool (_: desc))
-                              leftArm
-                              rightArm
-                              b;
-        piMotiveTy = forall "_" (sum left right) (_: u 0);
-        body =
-          let_ "P" piMotiveTy motive (P:
-          let_ "L" (forall "a" left (aVar: app P (inl left right aVar))) onLeft (L:
-          let_ "R" (forall "b" right (bVar: app P (inr left right bVar))) onRight (R:
-            descInd sumDescLR P
-              (lam "d" (interpHoas sumDescLR (mu sumDescLR)) (d:
-               lam "ih" (allHoas sumDescLR sumDescLR P d) (ih:
-                 app (app
-                   (boolElim
-                      (lam "b" bool (b:
-                         forall "r" (interpHoas (subDesc b) (mu sumDescLR)) (r:
-                         forall "rih" (allHoas sumDescLR (subDesc b) P r) (_:
-                           app P (descCon sumDescLR (pair b r))))))
-                      (lam "r" (interpHoas leftArm (mu sumDescLR)) (r:
-                       lam "rih" unit (_:
-                         app L (fst_ r))))
-                      (lam "r" (interpHoas rightArm (mu sumDescLR)) (r:
-                       lam "rih" unit (_:
-                         app R (fst_ r))))
-                      (fst_ d))
-                   (snd_ d))
-                   ih)))
-              h.scrut)));
-      in elaborate depth body
     else if t == "j" then
       T.mkJ (elaborate depth h.type) (elaborate depth h.lhs)
         (elaborate depth h.motive) (elaborate depth h.base)

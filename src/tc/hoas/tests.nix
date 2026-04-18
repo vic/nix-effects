@@ -8,6 +8,7 @@
 let
   E = fx.tc.eval;
   Q = fx.tc.quote;
+  V = fx.tc.value;
 
   inherit (self)
     nat bool unit void string int_ float_ attrs path function_ any
@@ -18,6 +19,7 @@ let
     opaqueLam absurd ann app fst_ snd_
     ind boolElim listElim sumElim
     desc mu descRet descArg descRec descPi descCon descElim
+    descI muI retI recI piI
     interpHoas allHoas natDesc listDesc sumDesc
     field recField piFieldD con datatype datatypeP
     elab checkHoas inferHoas natLit;
@@ -407,7 +409,7 @@ in {
         wDesc = A: B: descArg A (a: descPi (B a) descRet);
         wBool = wDesc bool (a:
                   boolElim (lam "_" bool (_: u 0)) unit void a);
-      in (checkHoas (u 0) (mu wBool)).tag;
+      in (checkHoas (u 0) (mu wBool tt)).tag;
       expected = "mu";
     };
 
@@ -597,22 +599,32 @@ in {
     "desc-elim-direct-infer" = {
       expr = let
         motive = lam "_" desc (_: forall "_" (u 0) (_: u 0));
-        onRet  = lam "X" (u 0) (_: unit);
+        # Indexed on-case arities: onRet/onRec bind the index `j`, onPi
+        # binds the index function `f : S → I`. onArg has no index binder
+        # because `descArg` does not carry one.
+        onRet  = lam "j" unit (_:
+                 lam "X" (u 0) (_: unit));
         onArg  = lam "S" (u 0) (S:
                  lam "T" (forall "_" S (_: desc)) (_:
                  lam "ih" (forall "s" S (_: forall "_" (u 0) (_: u 0))) (ih:
                  lam "X" (u 0) (X':
                    sigma "s" S (s: app (app ih s) X')))));
-        onRec  = lam "D" desc (_:
-                 lam "ih" (forall "_" (u 0) (_: u 0)) (ih:
-                 lam "X" (u 0) (X':
-                   sigma "_" X' (_: app ih X'))));
-        onPi   = lam "S" (u 0) (S:
+        onRec  = lam "j" unit (_:
                  lam "D" desc (_:
                  lam "ih" (forall "_" (u 0) (_: u 0)) (ih:
                  lam "X" (u 0) (X':
-                   sigma "_" (forall "_" S (_: X')) (_: app ih X')))));
-        tm = descElim motive onRet onArg onRec onPi descRet;
+                   sigma "_" X' (_: app ih X')))));
+        onPi   = lam "S" (u 0) (S:
+                 lam "f" (forall "_" S (_: unit)) (_:
+                 lam "D" desc (_:
+                 lam "ih" (forall "_" (u 0) (_: u 0)) (ih:
+                 lam "X" (u 0) (X':
+                   sigma "_" (forall "_" S (_: X')) (_: app ih X'))))));
+        # `descRet` (= retI tt) is a bare canonical intro: its j = tt has
+        # no infer rule under the bidirectional discipline. The outer `ann
+        # _ desc` routes synthesis through CHECK against `Desc ⊤`, where
+        # `check.nix`'s desc-ret rule accepts bare canonical forms.
+        tm = descElim motive onRet onArg onRec onPi (ann descRet desc);
       in (inferHoas tm).type.tag;
       expected = "VPi";
     };
@@ -620,112 +632,240 @@ in {
     # interpHoas ≡ interpF — compare nf of HOAS-elaborated term against
     # the quoted result of eval.nix's interp at the same D, X.
 
-    # ⟦ret⟧(X) = ⊤, so interpHoas descRet nat ≡ Unit
+    # ⟦ret tt⟧(X)(tt) = Eq ⊤ tt tt — under I=⊤, the ret-leaf interpretation
+    # is the propositional-equality witness collapsed by Unit-η.
     "interpHoas-matches-interpF-ret" = {
       expr = let
-        lhsNf = Q.nf [] (elab (interpHoas descRet nat));
+        Xfam = lam "_" unit (_: nat);
+        lhsNf = Q.nf [] (elab (interpHoas unit descRet Xfam tt));
         dVal = E.eval [] (elab descRet);
-        xVal = E.eval [] (elab nat);
-        rhsNf = Q.quote 0 (E.interp dVal xVal);
+        xVal = E.eval [] (elab Xfam);
+        rhsNf = Q.quote 0 (E.interp V.vUnit dVal xVal V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # ⟦rec ret⟧(X) = X × ⊤
+    # ⟦rec tt (ret tt)⟧(X)(tt) = Σ(_: X tt). Eq ⊤ tt tt
     "interpHoas-matches-interpF-rec-ret" = {
       expr = let
         D = descRec descRet;
-        X = bool;
-        lhsNf = Q.nf [] (elab (interpHoas D X));
-        rhsNf = Q.quote 0 (E.interp (E.eval [] (elab D)) (E.eval [] (elab X)));
+        Xfam = lam "_" unit (_: bool);
+        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        rhsNf = Q.quote 0 (E.interp V.vUnit
+          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # ⟦arg bool (b: ret)⟧(X) = Σ(b:Bool). ⊤
+    # ⟦arg bool (b: ret tt)⟧(X)(tt) = Σ(b:Bool). Eq ⊤ tt tt
     "interpHoas-matches-interpF-arg-bool" = {
       expr = let
         D = descArg bool (_: descRet);
-        X = nat;
-        lhsNf = Q.nf [] (elab (interpHoas D X));
-        rhsNf = Q.quote 0 (E.interp (E.eval [] (elab D)) (E.eval [] (elab X)));
+        Xfam = lam "_" unit (_: nat);
+        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        rhsNf = Q.quote 0 (E.interp V.vUnit
+          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # ⟦pi bool ret⟧(X) = (Bool→X) × ⊤
+    # ⟦pi bool (λ_.tt) (ret tt)⟧(X)(tt) = Σ(_: Bool→X tt). Eq ⊤ tt tt
     "interpHoas-matches-interpF-pi-bool" = {
       expr = let
         D = descPi bool descRet;
-        X = nat;
-        lhsNf = Q.nf [] (elab (interpHoas D X));
-        rhsNf = Q.quote 0 (E.interp (E.eval [] (elab D)) (E.eval [] (elab X)));
+        Xfam = lam "_" unit (_: nat);
+        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        rhsNf = Q.quote 0 (E.interp V.vUnit
+          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # ⟦natDesc⟧(X) — exercises the boolElim inside the arg body
+    # ⟦natDesc⟧(X)(tt) — exercises the boolElim inside the arg body
     "interpHoas-matches-interpF-natDesc" = {
       expr = let
-        lhsNf = Q.nf [] (elab (interpHoas natDesc bool));
-        rhsNf = Q.quote 0 (E.interp
+        Xfam = lam "_" unit (_: bool);
+        lhsNf = Q.nf [] (elab (interpHoas unit natDesc Xfam tt));
+        rhsNf = Q.quote 0 (E.interp V.vUnit
           (E.eval [] (elab natDesc))
-          (E.eval [] (elab bool)));
+          (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # allHoas ≡ allTy — also validates the motive's d-annotation fix:
-    # without `d : interpHoas D (mu Douter)` in the motive, desc-elim's
-    # paTy rule would reject onArg's `fst_ d` / `snd_ d` inside the body.
+    # allHoas ≡ allTy — exercises the motive's d-binder annotation
+    # `d : interpHoas D (mu Douter)`, which onArg requires so that
+    # `fst_ d` / `snd_ d` inside the body type-check under desc-elim's
+    # paTy rule.
 
-    # All natDesc descRet P tt = ⊤ (no recursive arg)
+    # All ⊤ natDesc descRet P tt refl = ⊤ (no recursive arg; d : Eq ⊤ tt tt = refl)
     "allHoas-matches-allTy-ret" = {
       expr = let
-        pHoas = lam "_" (mu natDesc) (_: u 0);
-        lhsNf = Q.nf [] (elab (allHoas natDesc descRet pHoas tt));
+        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
+        lhsNf = Q.nf [] (elab (allHoas unit natDesc descRet pHoas tt refl));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab descRet);
         pVal = E.eval [] (elab pHoas);
-        dVal = E.eval [] (elab tt);
-        rhsNf = Q.quote 0 (E.allTy douter dsub pVal dVal);
+        dVal = E.eval [] (elab refl);
+        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # All natDesc (rec ret) P (zero, tt) exercises onRec
+    # All ⊤ natDesc (rec tt (ret tt)) P tt (zero, refl) exercises onRec.
+    # d : ⟦rec tt (ret tt)⟧(muFam) tt = Σ(_: μnatDesc tt). Eq ⊤ tt tt.
     "allHoas-matches-allTy-rec-ret" = {
       expr = let
-        pHoas = lam "_" (mu natDesc) (_: u 0);
-        zeroH = descCon natDesc (pair true_ tt);
-        dH = pair zeroH tt;
+        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
+        zeroH = descCon natDesc tt (pair true_ refl);
+        dH = pair zeroH refl;
         D = descRec descRet;
-        lhsNf = Q.nf [] (elab (allHoas natDesc D pHoas dH));
+        lhsNf = Q.nf [] (elab (allHoas unit natDesc D pHoas tt dH));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy douter dsub pVal dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
 
-    # All natDesc (arg bool (_: ret)) P (true_, tt) exercises onArg —
-    # the case whose type-checking motivates the motive fix.
+    # All ⊤ natDesc (arg bool (_: ret tt)) P tt (true_, refl) exercises
+    # onArg — the case whose type-checking depends on the motive's
+    # d-binder annotation. d inhabits Σ(b:Bool). Eq ⊤ tt tt.
     "allHoas-matches-allTy-arg-bool-ret" = {
       expr = let
-        pHoas = lam "_" (mu natDesc) (_: u 0);
+        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
         D = descArg bool (_: descRet);
-        dH = pair true_ tt;
-        lhsNf = Q.nf [] (elab (allHoas natDesc D pHoas dH));
+        dH = pair true_ refl;
+        lhsNf = Q.nf [] (elab (allHoas unit natDesc D pHoas tt dH));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy douter dsub pVal dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
+
+    # ===== Indexed-description acceptance (I = Nat / I = Bool) =====
+    # These exercise the indexed kernel path directly — the `descI`/`retI`
+    # /`recI`/`piI` primitives at non-⊤ indices — rather than the ⊤-slice
+    # aliases (`desc`/`descRet`/`descRec`/`descPi`) that specialise I to
+    # Unit.
+
+    # `retI 3 : Desc Nat` — j = 3 inhabits I = Nat.
+    "indexed-desc-ret-at-nat-checks" = {
+      expr = (checkHoas (descI nat) (retI (natLit 3))).tag;
+      expected = "desc-ret";
+    };
+
+    # `recI 2 (retI 3) : Desc Nat` — j = 2, subdesc `retI 3 : Desc Nat`.
+    "indexed-desc-rec-at-nat-checks" = {
+      expr = (checkHoas (descI nat) (recI (natLit 2) (retI (natLit 3)))).tag;
+      expected = "desc-rec";
+    };
+
+    # `piI Bool (λb. boolElim _ 2 3 b) (retI 4) : Desc Nat` — the index
+    # function is bool-dependent, exercising the non-constant f case.
+    "indexed-desc-pi-at-nat-dependent-f" = {
+      expr = let
+        fAnn = ann (lam "b" bool (b:
+                 boolElim (lam "_" bool (_: nat))
+                          (natLit 2) (natLit 3) b))
+                   (forall "_" bool (_: nat));
+        D = piI bool fAnn (retI (natLit 4));
+      in (checkHoas (descI nat) D).tag;
+      expected = "desc-pi";
+    };
+
+    # Rejection: `retI 3 : Desc Bool` fails — j = 3 is a Nat, not a Bool.
+    # The `desc-ret` CHECK rule at check.nix:174-177 threads `ty.I` into
+    # the check on `tm.j`, producing a type mismatch.
+    "indexed-desc-ret-wrong-index-rejects" = {
+      expr = (checkHoas (descI bool) (retI (natLit 3))) ? error;
+      expected = true;
+    };
+
+    # `μ (retI 3 : Desc Nat) 3 : U(0)` — mu at the matching target index.
+    "indexed-mu-at-nat-checks" = {
+      expr = (checkHoas (u 0) (muI nat (retI (natLit 3)) (natLit 3))).tag;
+      expected = "mu";
+    };
+
+    # ===== de Bruijn indices under Pi `_` binders =====
+    # The value-level on-cases at `eval/desc.nix` (`interpOnArg`,
+    # `interpOnPi`, `allOnPi`, `evOnPi`) each embed a Pi-domain
+    # annotation whose codomain references the index type `I`. Under
+    # the Pi's `_` binder the closure env is `[_, S, I]`, so references
+    # to `I` must use `Var 2`; `Var 1` resolves to `S`, yielding a
+    # description at the wrong index type and breaking any stuck-scrut
+    # `vDescElim` that relies on these on-cases.
+    #
+    # `vDescElim` fully reduces on a concrete `VDesc*` and drops the
+    # intermediate Pi-domain annotations from its result, so this
+    # invariant is only observable when the scrut is `VNe + eDescElim`
+    # — the frame quotes the motive and on-case VLams as-is. The tests
+    # below force that shape by calling `E.interp` / `E.allTy` on a
+    # bare neutral description (`vNe 0 []`) at `I = ⊤`.
+    #
+    # At `I = ⊤` the index value is `vUnit`, which quotes to the
+    # literal `{tag="unit"}`. A `Var 2` slot in the on-case body
+    # therefore materialises as `{tag="unit"}` after quote; a `Var 1`
+    # slot would resolve to the fresh-Var binding for `S` and quote as
+    # `{tag="var"; idx=1}`.
+    #
+    # Shared setup: build the quoted NF of `interp V.vUnit (vNe 0 []) X
+    # tt` (or the analogous `allTy` call) and navigate to the descElim
+    # node inside the spine.
+
+    # `interpOnArg`: `T`'s Pi annotation is `Π _:S. Desc I`. The
+    # Desc's `I` component must quote to unit, not to a fresh-Var
+    # bound for `S`.
+    "interpOnArg-T-codomain-quotes-to-I" = {
+      expr = let
+        T' = fx.tc.term;
+        Dstuck = V.vNe 0 [];
+        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkBool);
+        qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
+        descElim = qt.fn.fn;
+      in descElim.onArg.body.domain.codomain.I.tag;
+      expected = "unit";
+    };
+
+    # `interpOnPi`: `f`'s Pi annotation is `Π _:S. I`. The codomain
+    # must quote to unit, not to a fresh-Var bound for `S`.
+    "interpOnPi-f-codomain-quotes-to-I" = {
+      expr = let
+        T' = fx.tc.term;
+        Dstuck = V.vNe 0 [];
+        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkBool);
+        qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
+        descElim = qt.fn.fn;
+      in descElim.onPi.body.domain.codomain.tag;
+      expected = "unit";
+    };
+
+    # `allOnPi`: analogous probe via `E.allTy` on a stuck desc. `f`'s
+    # Pi codomain must quote to unit.
+    "allOnPi-f-codomain-quotes-to-I" = {
+      expr = let
+        T' = fx.tc.term;
+        Dstuck = V.vNe 0 [];
+        # P : (i:⊤) → μ Dstuck i → U — use a trivial constant.
+        P = V.vLam "i" V.vUnit (V.mkClosure [] (T'.mkU 0));
+        qt = Q.quote 1 (E.allTy V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
+        descElim = qt.fn.fn.fn;
+      in descElim.onPi.body.domain.codomain.tag;
+      expected = "unit";
+    };
+
+    # `evOnPi` carries the same `Var 2` invariant in the `everywhere`
+    # family. It is exercised indirectly through `vDescIndF` whenever a
+    # datatype elim runs on a neutral motive over a `π` field (e.g.
+    # W-types, `piField`-containing datatypes); a dedicated stuck
+    # `descInd` probe analogous to the three above would pin it
+    # directly.
 
     # ===== Datatype macro =====
     # UnitDT: the n=1 degenerate case — singleton constructor with no
@@ -744,8 +884,10 @@ in {
         cons = [{ name = "tt"; fields = []; }];
       };
     };
+    # The macro emits D as `ann <spine> desc` so the outer Tm is an `ann`;
+    # `.term` is the raw spine. For a single zero-field con, spine = descRet.
     "datatype-unit-D-elab" = {
-      expr = (elab (datatype "Unit" [ (con "tt" []) ]).D).tag;
+      expr = (elab (datatype "Unit" [ (con "tt" []) ]).D).term.tag;
       expected = "desc-ret";
     };
     "datatype-unit-T-elab" = {
@@ -832,11 +974,12 @@ in {
         ];
       };
     };
-    # D = descArg bool (b: boolElim _ descRet descRet b) — same
-    # Bool-fold as natDesc, with both arms degenerate (descRet) instead
-    # of asymmetric (descRet vs descRec descRet).
+    # D = ann (descArg bool (b: boolElim _ descRet descRet b)) desc — the
+    # ann-wrapper routes D through CHECK; `.term` is the raw spine. Two
+    # zero-field cons produce a Bool-fold, same shape as natDesc but with
+    # both arms degenerate (descRet) instead of asymmetric.
     "datatype-bool-D-elab" = {
-      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).D).tag;
+      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).D).term.tag;
       expected = "desc-arg";
     };
     "datatype-bool-T-elab" = {
@@ -864,19 +1007,20 @@ in {
       expected = true;
     };
     "datatype-bool-true-payload-shape" = {
-      # encodeTag 0 2 tt = pair true_ tt — verified via nf against a
-      # hand-written descCon emission with the same payload.
+      # encodeTag 0 2 refl = pair true_ refl — verified via nf against a
+      # hand-written descCon emission with the same payload. The ret-leaf
+      # terminator is refl : Eq ⊤ tt tt.
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        handTrue = descCon B.D (pair true_ tt);
+        handTrue = descCon B.D tt (pair true_ refl);
       in Q.nf [] (elab B.true) == Q.nf [] (elab handTrue);
       expected = true;
     };
     "datatype-bool-false-payload-shape" = {
-      # encodeTag 1 2 tt = pair false_ (encodeTag 0 1 tt) = pair false_ tt
+      # encodeTag 1 2 refl = pair false_ (encodeTag 0 1 refl) = pair false_ refl
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        handFalse = descCon B.D (pair false_ tt);
+        handFalse = descCon B.D tt (pair false_ refl);
       in Q.nf [] (elab B.false) == Q.nf [] (elab handFalse);
       expected = true;
     };
@@ -1032,16 +1176,16 @@ in {
       ]; in (checkHoas (u 0) N.T).tag;
       expected = "mu";
     };
-    # Constructor zero: descCon D (pair true_ tt) — same payload shape
+    # Constructor zero: descCon D tt (pair true_ refl) — same payload shape
     # as the prelude `zero` HOAS combinator, just over the macro-built
-    # D.
+    # D. The ret-leaf terminator is refl : Eq ⊤ tt tt.
     "datatype-nat-zero-payload" = {
       expr = let
         N = datatype "Nat" [
           (con "zero" [])
           (con "succ" [ (recField "pred") ])
         ];
-        handZero = descCon N.D (pair true_ tt);
+        handZero = descCon N.D tt (pair true_ refl);
       in Q.nf [] (elab N.zero) == Q.nf [] (elab handZero);
       expected = true;
     };
@@ -1068,9 +1212,9 @@ in {
       ]; in (inferHoas N.succ).type.tag;
       expected = "VPi";
     };
-    # Applied succ: descCon D (pair false_ (pair pred tt)). After nf,
+    # Applied succ: descCon D tt (pair false_ (pair pred refl)). After nf,
     # the ann wrapper and the lam β-reduce away, leaving the descCon
-    # term.
+    # term. The ret-leaf terminator is refl : Eq ⊤ tt tt.
     "datatype-nat-succ-applied-payload" = {
       expr = let
         N = datatype "Nat" [
@@ -1078,7 +1222,7 @@ in {
           (con "succ" [ (recField "pred") ])
         ];
         macroSucc = app N.succ N.zero;
-        handSucc = descCon N.D (pair false_ (pair N.zero tt));
+        handSucc = descCon N.D tt (pair false_ (pair N.zero refl));
       in Q.nf [] (elab macroSucc) == Q.nf [] (elab handSucc);
       expected = true;
     };

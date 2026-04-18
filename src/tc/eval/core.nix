@@ -238,13 +238,13 @@ in {
         self.vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
           (ev tm.base) (ev tm.rhs) (ev tm.eq)
 
-      # Descriptions (non-indexed, I = ⊤)
-      else if t == "desc" then vDesc
-      else if t == "desc-ret" then vDescRet
+      # Descriptions
+      else if t == "desc" then vDesc (ev tm.I)
+      else if t == "desc-ret" then vDescRet (ev tm.j)
       else if t == "desc-arg" then vDescArg (ev tm.S) (mkClosure env tm.T)
-      else if t == "desc-rec" then vDescRec (ev tm.D)
-      else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.D)
-      else if t == "mu" then vMu (ev tm.D)
+      else if t == "desc-rec" then vDescRec (ev tm.j) (ev tm.D)
+      else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.f) (ev tm.D)
+      else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
       # desc-con — trampolined for deep recursive chains (5000+).
       # Peels a homogeneous desc-con chain along its recursive position.
       # The outer D's false-branch shape drives decomposition: iff
@@ -305,21 +305,24 @@ in {
           base = (builtins.elemAt chain n).val;
         in if n > f then throw "normalization budget exceeded"
         else let
-          baseVal = vDescCon dVal (self.evalF (f - n) env base.d);
+          baseVal = vDescCon dVal
+            (self.evalF (f - n) env base.i)
+            (self.evalF (f - n) env base.d);
         in builtins.foldl' (acc: i:
           let
             layer = (builtins.elemAt chain (n - 1 - i)).val;
             peeled = peel layer;
             heads = peeled.heads;
             headVals = map (h: self.evalF (f - n + i) env h) heads;
+            iLayerVal = self.evalF (f - n + i) env layer.i;
             buildInner = hs: innerTail:
               if hs == [] then innerTail
               else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
-          in vDescCon dVal
+          in vDescCon dVal iLayerVal
                (vPair vFalse (buildInner headVals (vPair acc vTt)))
         ) baseVal (builtins.genList (x: x) n)
       else if t == "desc-ind" then
-        self.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.scrut)
+        self.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.i) (ev tm.scrut)
       else if t == "desc-elim" then
         self.vDescElimF f (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
           (ev tm.onRec) (ev tm.onPi) (ev tm.scrut)
@@ -602,48 +605,54 @@ in {
       expected = "VCons";
     };
 
-    "eval-desc" = { expr = (eval [] T.mkDesc).tag; expected = "VDesc"; };
-    "eval-desc-ret" = { expr = (eval [] T.mkDescRet).tag; expected = "VDescRet"; };
+    "eval-desc" = { expr = (eval [] (T.mkDesc T.mkUnit)).tag; expected = "VDesc"; };
+    "eval-desc-ret" = { expr = (eval [] (T.mkDescRet T.mkTt)).tag; expected = "VDescRet"; };
     "eval-desc-arg" = {
-      expr = (eval [] (T.mkDescArg T.mkBool T.mkDescRet)).tag;
+      expr = (eval [] (T.mkDescArg T.mkBool
+        (T.mkLam "_" T.mkBool (T.mkDescRet T.mkTt)))).tag;
       expected = "VDescArg";
     };
     "eval-desc-rec" = {
-      expr = (eval [] (T.mkDescRec T.mkDescRet)).tag;
+      expr = (eval [] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))).tag;
       expected = "VDescRec";
     };
     "eval-desc-pi" = {
-      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).tag;
+      expr = (eval [] (T.mkDescPi T.mkBool
+        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "VDescPi";
     };
     "eval-desc-pi-S" = {
-      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).S.tag;
+      expr = (eval [] (T.mkDescPi T.mkBool
+        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
       expected = "VBool";
     };
     "eval-desc-pi-D" = {
-      expr = (eval [] (T.mkDescPi T.mkBool T.mkDescRet)).D.tag;
+      expr = (eval [] (T.mkDescPi T.mkBool
+        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
       expected = "VDescRet";
     };
     "eval-mu" = {
-      expr = (eval [] (T.mkMu T.mkDescRet)).tag;
+      expr = (eval [] (T.mkMu T.mkUnit (T.mkDescRet T.mkTt) T.mkTt)).tag;
       expected = "VMu";
     };
     "eval-desc-con" = {
-      expr = (eval [] (T.mkDescCon T.mkDescRet T.mkTt)).tag;
+      expr = (eval [] (T.mkDescCon (T.mkDescRet T.mkTt) T.mkTt T.mkRefl)).tag;
       expected = "VDescCon";
     };
     "eval-desc-ind-stuck" = {
       # desc-ind on a neutral scrutinee produces VNe
-      expr = (eval [ (freshVar 0) ] (T.mkDescInd T.mkDescRet
-        (T.mkVar 0) (T.mkVar 0) (T.mkVar 0))).tag;
+      expr = (eval [ (freshVar 0) ] (T.mkDescInd (T.mkDescRet T.mkTt)
+        (T.mkVar 0) (T.mkVar 0) T.mkTt (T.mkVar 0))).tag;
       expected = "VNe";
     };
 
     "eval-desc-elim-ret" = {
-      # descElim on VDescRet returns onRet
+      # descElim on VDescRet applies onRet to j. With onRet = λ_:Unit. Unit and j=vTt, result is VUnit.
       expr = (eval [] (T.mkDescElim
-        (T.mkLam "_" T.mkDesc (T.mkU 0))
-        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkDescRet)).tag;
+        (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        T.mkUnit T.mkUnit T.mkUnit
+        (T.mkDescRet T.mkTt))).tag;
       expected = "VUnit";
     };
     "eval-desc-elim-stuck" = {
@@ -654,23 +663,28 @@ in {
     };
 
     "eval-desc-ind-ret-con" = {
-      # ind ret (λ_.Nat) (λd ih. 0) (con tt) = 0
+      # ind (ret tt) P (λi d ih. 0) tt (con tt refl) = 0
       expr = let
-        D = T.mkDescRet;
-        P = T.mkLam "_" (T.mkMu D) T.mkNat;
-        step = T.mkLam "d" T.mkUnit (T.mkLam "ih" T.mkUnit T.mkZero);
-        scrut = T.mkDescCon D T.mkTt;
-      in (eval [] (T.mkDescInd D P step scrut)).tag;
+        D = T.mkDescRet T.mkTt;
+        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
+        step = T.mkLam "i" T.mkUnit
+          (T.mkLam "d" T.mkUnit
+            (T.mkLam "ih" T.mkUnit T.mkZero));
+        scrut = T.mkDescCon D T.mkTt T.mkRefl;
+      in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
       expected = "VZero";
     };
     "eval-desc-ind-arg-con" = {
-      # D = arg Bool (λ_.ret), ind D P step (con (false, tt)) = step (false,tt) tt
+      # D = arg Bool (λ_. ret tt), ind D P step tt (con tt (false, refl)) = 0
       expr = let
-        D = T.mkDescArg T.mkBool T.mkDescRet;
-        P = T.mkLam "_" (T.mkMu D) T.mkNat;
-        step = T.mkLam "d" (T.mkU 0) (T.mkLam "ih" T.mkUnit T.mkZero);
-        scrut = T.mkDescCon D (T.mkPair T.mkFalse T.mkTt);
-      in (eval [] (T.mkDescInd D P step scrut)).tag;
+        D = T.mkDescArg T.mkBool
+          (T.mkLam "_" T.mkBool (T.mkDescRet T.mkTt));
+        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
+        step = T.mkLam "i" T.mkUnit
+          (T.mkLam "d" (T.mkU 0)
+            (T.mkLam "ih" T.mkUnit T.mkZero));
+        scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkFalse T.mkRefl);
+      in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
       expected = "VZero";
     };
 

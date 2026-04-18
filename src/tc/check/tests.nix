@@ -16,7 +16,7 @@ let
     runCheck checkTm inferTm;
 
   inherit (V) vNat vZero vSucc vBool vPi vSigma
-    vList vUnit vVoid vSum vEq vU mkClosure
+    vList vUnit vVoid vSum vEq vU mkClosure vTt
     vString vInt vFloat vAttrs vPath vFunction vAny
     vDescRet vMu;
 
@@ -928,90 +928,149 @@ in {
       expected = true;
     };
 
+    # Bare canonical forms (tt/zero/refl) have no infer rule — bidirectional
+    # discipline requires annotation at synthesis positions. Every test below
+    # that embeds a bare `tt` at a j/i index position wraps its enclosing
+    # description in `T.mkAnn _ (T.mkDesc T.mkUnit)` so synthesis recovers I=Unit,
+    # and checking cascades through the CHECK rules (which accept bare tt via
+    # the tt-check rule at check.nix:123).
     "infer-desc-ret" = {
-      expr = (inferTm ctx0 T.mkDescRet).type.tag;
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-desc-arg" = {
-      expr = (inferTm ctx0 (T.mkDescArg T.mkBool T.mkDescRet)).type.tag;
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescArg T.mkBool (T.mkDescRet T.mkTt))
+                 (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-desc-rec" = {
-      expr = (inferTm ctx0 (T.mkDescRec T.mkDescRet)).type.tag;
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))
+                 (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-desc-pi" = {
-      expr = (inferTm ctx0 (T.mkDescPi T.mkBool T.mkDescRet)).type.tag;
+      # f : Bool → Unit; all synthesis positions fold through the ann's check mode.
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescPi T.mkBool
+                   (T.mkLam "_" T.mkBool T.mkTt)
+                   (T.mkDescRet T.mkTt))
+                 (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-mu" = {
-      expr = (inferTm ctx0 (T.mkMu T.mkDescRet)).type.level;
+      # infer on mu routes through checkTypeLevel, which infers tm.D;
+      # ann-wrap D so I=Unit is recoverable.
+      expr = (inferTm ctx0
+        (T.mkMu T.mkUnit
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          T.mkTt)).type.level;
       expected = 0;
     };
 
     "checktype-desc" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkDesc)).level;
+      expr = (runCheck (checkTypeLevel ctx0 (T.mkDesc T.mkUnit))).level;
       expected = 1;
     };
 
     "checktype-mu" = {
-      expr = (runCheck (checkTypeLevel ctx0 (T.mkMu T.mkDescRet))).level;
+      # checkTypeLevel's mu branch infers tm.D; ann-wrap D to carry I=Unit.
+      expr = (runCheck (checkTypeLevel ctx0
+        (T.mkMu T.mkUnit
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          T.mkTt))).level;
       expected = 0;
     };
 
     "infer-desc-con" = {
-      expr = (inferTm ctx0 (T.mkDescCon T.mkDescRet T.mkTt)).type.tag;
+      # Ret-leaf payload is mkRefl (witnesses Eq I j i; here Eq Unit tt tt by Unit-η).
+      expr = (inferTm ctx0
+        (T.mkDescCon
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          T.mkTt T.mkRefl)).type.tag;
       expected = "VMu";
     };
 
     "check-desc-con" = {
-      expr = (checkTm ctx0 (T.mkDescCon T.mkDescRet T.mkTt) (vMu vDescRet)).tag;
+      expr = (checkTm ctx0
+        (T.mkDescCon (T.mkDescRet T.mkTt) T.mkTt T.mkRefl)
+        (vMu vUnit (vDescRet vTt) vTt)).tag;
       expected = "desc-con";
     };
 
     "infer-desc-elim-ret" = {
+      # Indexed on-cases: onRet (1 binder j:I), onArg (3: S T ih), onRec (3: j D ih),
+      # onPi (4: S f D ih). Each body returns a U-typed term for large elim.
+      # scrut is ann-wrapped so I is recoverable in infer mode.
       expr = (inferTm ctx0 (T.mkDescElim
-        (T.mkLam "_" T.mkDesc (T.mkU 0))
-        T.mkUnit
-        (T.mkLam "S" (T.mkU 0) (T.mkLam "T" (T.mkPi "_" (T.mkVar 0) T.mkDesc)
+        (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
+        (T.mkLam "j" T.mkUnit T.mkUnit)
+        (T.mkLam "S" (T.mkU 0) (T.mkLam "T"
+          (T.mkPi "_" (T.mkVar 0) (T.mkDesc T.mkUnit))
           (T.mkLam "ih" (T.mkPi "s" (T.mkVar 1) (T.mkU 0)) T.mkUnit)))
-        (T.mkLam "D" T.mkDesc (T.mkLam "ih" (T.mkU 0) T.mkUnit))
-        (T.mkLam "S" (T.mkU 0) (T.mkLam "D" T.mkDesc
+        (T.mkLam "j" T.mkUnit (T.mkLam "D" (T.mkDesc T.mkUnit)
           (T.mkLam "ih" (T.mkU 0) T.mkUnit)))
-        T.mkDescRet)).type.tag;
+        (T.mkLam "S" (T.mkU 0) (T.mkLam "f"
+          (T.mkPi "_" (T.mkVar 0) T.mkUnit)
+          (T.mkLam "D" (T.mkDesc T.mkUnit)
+            (T.mkLam "ih" (T.mkU 0) T.mkUnit))))
+        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit)))).type.tag;
       expected = "VU";
     };
 
     "reject-desc-con-bad-payload" = {
-      expr = (inferTm ctx0 (T.mkDescCon T.mkDescRet T.mkZero)) ? error;
+      # Ret-leaf payload type is Eq Unit tt tt; mkZero : Nat fails to inhabit it.
+      expr = (inferTm ctx0
+        (T.mkDescCon
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          T.mkTt T.mkZero)) ? error;
       expected = true;
     };
 
     "reject-desc-arg-bad-S" = {
-      expr = (inferTm ctx0 (T.mkDescArg T.mkZero T.mkDescRet)) ? error;
+      # mkZero is not a type; check S : U(0) fails before reaching the body.
+      expr = (inferTm ctx0
+        (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt))) ? error;
       expected = true;
     };
 
     "infer-desc-ind-ret" = {
-      expr = (inferTm ctx0 (T.mkDescInd T.mkDescRet
-        (T.mkLam "_" (T.mkMu T.mkDescRet) T.mkNat)
-        (T.mkLam "d" T.mkUnit (T.mkLam "ih" T.mkUnit T.mkZero))
-        (T.mkDescCon T.mkDescRet T.mkTt))).type.tag;
+      # Motive: (i:I) → μD i → U. Step: Π(i:I). Π(d:Eq Unit tt i). Π(_:Unit). Nat.
+      # desc-ind infers tm.D; ann-wrap D so I=Unit is recoverable.
+      expr = let
+        D = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit);
+      in (inferTm ctx0 (T.mkDescInd D
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))
+        (T.mkLam "i" T.mkUnit
+          (T.mkLam "d" (T.mkEq T.mkUnit T.mkTt (T.mkVar 0))
+            (T.mkLam "_" T.mkUnit T.mkZero)))
+        T.mkTt
+        (T.mkDescCon D T.mkTt T.mkRefl))).type.tag;
       expected = "VNat";
     };
 
     "infer-desc-ind-arg" = {
+      # D = arg Bool (ret tt) — body is body-Tm under implicit s:Bool, not a lambda.
+      # interp at i = Σ(s:Bool). Eq Unit tt i (Var 1 = i from inside the Sigma snd).
+      # All = Unit (allOnRet collapses to Unit at ret-leaf for I=⊤).
       expr = let
-        D = T.mkDescArg T.mkBool T.mkDescRet;
+        D = T.mkAnn (T.mkDescArg T.mkBool (T.mkDescRet T.mkTt))
+                    (T.mkDesc T.mkUnit);
       in (inferTm ctx0 (T.mkDescInd D
-        (T.mkLam "_" (T.mkMu D) T.mkNat)
-        (T.mkLam "d" (T.mkSigma "_" T.mkBool T.mkUnit)
-          (T.mkLam "ih" T.mkUnit T.mkZero))
-        (T.mkDescCon D (T.mkPair T.mkFalse T.mkTt)))).type.tag;
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))
+        (T.mkLam "i" T.mkUnit
+          (T.mkLam "d" (T.mkSigma "s" T.mkBool
+            (T.mkEq T.mkUnit T.mkTt (T.mkVar 1)))
+            (T.mkLam "_" T.mkUnit T.mkZero)))
+        T.mkTt
+        (T.mkDescCon D T.mkTt
+          (T.mkPair T.mkFalse T.mkRefl)))).type.tag;
       expected = "VNat";
     };
   };

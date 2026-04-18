@@ -68,10 +68,22 @@ in {
           bind (self.check ctx tm.lhs aVal) (lTm:
             bind (self.check ctx tm.rhs aVal) (rTm:
               pure { term = T.mkEq ar.term lTm rTm; level = ar.level; })))
-      else if t == "desc" then pure { term = T.mkDesc; level = 1; }
+      else if t == "desc" then
+        # `desc I : U(1)` — I is a small type.
+        bind (self.check ctx tm.I (V.vU 0)) (iTm:
+          pure { term = T.mkDesc iTm; level = 1; })
       else if t == "mu" then
-        bind (self.check ctx tm.D V.vDesc) (dTm:
-          pure { term = T.mkMu dTm; level = 0; })
+        # `μ D i : U(0)` where `D : Desc I`, `i : I`. I is read off D's
+        # inferred type so the user doesn't have to spell it out.
+        bind (self.infer ctx tm.D) (dResult:
+          let dTy = dResult.type; in
+          if dTy.tag != "VDesc"
+          then typeError "mu: D must have type Desc I"
+            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
+          else
+            bind (self.check ctx tm.i dTy.I) (iTm:
+              pure { term = T.mkMu (Q.quote ctx.depth dTy.I) dResult.term iTm;
+                     level = 0; }))
       # Fallback: infer and check it's a universe, extract level.
       else
         bind (self.infer ctx tm) (result:

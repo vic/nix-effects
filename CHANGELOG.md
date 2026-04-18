@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-18
+
+Descriptions become indexed. `Desc` and `μ` previously classified only `⊤`-indexed datatypes; they now take an arbitrary index type `I`, so `μ D : I → U` picks out a family of types rather than a single type. This is the machinery needed for length-indexed vectors, `Fin n`, propositional equality-as-a-description, and anything else that carries a value at the type level. The old unindexed combinators (`desc`, `mu`, `descRet`, `descRec`, `descPi`) remain as `⊤`-slice aliases, so the datatype macro and every downstream consumer — `Nat`, `List`, `Sum`, the category-theory library — keep working unchanged. A latent de Bruijn off-by-one in the value-level description eliminator is fixed en route.
+
+### Added
+
+- **Indexed descriptions** (`Desc I`) — `descI`, `muI`, `retI`, `recI`, `piI` at any index type. `descCon D i d` and `descInd D motive step i scrut` thread the target index; `VMu` / `vMu` / `mkMu` carry `I` alongside `D` and `i` so the kernel's `desc-con` CHECK rule recovers the index type from the surrounding `μ` without re-inferring the description
+- **Acceptance coverage at non-`⊤` indices** — positive tests at `Desc Nat` and `Desc Bool` exercise `retI`, `recI`, and `piI` with a bool-dependent index function, plus an index-mismatch rejection at `Desc Bool` against a `Nat` literal and a `muI` at a matching target index
+- **`J`-transport inside the `datatype` macro** — `dispatchStep` transports each constructor's step through the leaf `Eq ⊤ tt iArg` witness via the kernel's `J` primitive. Without Axiom K, MLTT cannot definitionally collapse `VRefl ≡ VNe(eq)`; routing through `J` is the principled transport
+- **Pinned invariants for de Bruijn indices under `Π _:S. _` binders** — three tests assert that `interpOnArg` / `interpOnPi` / `allOnPi` quote their index-referencing Pi-domain codomain to the literal index value, not to the fresh-Var binding for `S`, when evaluated on a stuck `vDescElim` forced by `V.vNe 0 []`
+
+### Changed
+
+- **`desc-con` CHECK rule checks the description instead of inferring it** — `tm.D` is checked against `Desc ty.I`, using the index type recovered from the surrounding `μ`. Preserves strict bidirectional discipline: canonical intro forms at index positions (`tt`, `zero`, `refl`) remain checkable-only
+- **`⊤`-slice aliases become thin wrappers** — `mu = D: i: muI unit D i`, `descRet = retI tt`, `descRec D = recI tt D`, `descPi S D = piI S (ann (λ_.tt) (S → ⊤)) D`, `desc = descI unit`. The datatype macro and the prelude descriptions `natDesc` / `listDesc` / `sumDesc` route through these aliases, so their behaviour is unchanged. `descCon` and `descInd` match kernel arities exactly (no alias): at `I = ⊤`, call sites write `tt` explicitly at the index position
+- **Dead adapter branches deleted** — the `nat-elim` / `list-elim` / `sum-elim` branches in `hoas/elaborate.nix` were unreachable once `NatDT` / `ListDT` / `SumDT` migrated to the macro-generated elim path in 0.8.0. Removed
+
+### Fixed
+
+- **de Bruijn off-by-one in the value-level description eliminator.** Under a `Π _:S. _` binder inside `interpOnArg` / `interpOnPi` / `allOnPi` / `evOnPi`, the closure env is `[_, S, I]`, so references to the index type `I` must use `Var 2` — not `Var 1`, which resolves to `S`. Latent because `vDescElim` fully reduces on a concrete `VDesc*` and drops the intermediate Pi-domain annotations; observable only under `VNe + eDescElim` (e.g. `natDesc`'s inner `boolElim` stuck on a `Σ`-bound variable). Regression tests pin the invariant at three of the four sites
+
 ## [0.8.0] - 2026-04-17
 
 A macro layer for user-defined datatypes lands on top of the kernel's description universe. Declaring an inductive type now means naming its fields; the macro compiles them to descriptions, flattens saturated and linear-recursive constructor chains to flat `desc-con` terms at elaboration time, and threads type parameters through a plain Π-binder so universe-typed components sit at the outside of the definition. `Nat`, `List`, and `Sum` are rebuilt through this surface. The category-theory example library is rewritten as a five-chapter guided tour that uses exactly the same macros users have.

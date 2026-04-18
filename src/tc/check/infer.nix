@@ -212,102 +212,173 @@ in {
       else if t == "path" then pure { term = T.mkPath; type = V.vU 0; }
       else if t == "function" then pure { term = T.mkFunction; type = V.vU 0; }
       else if t == "any" then pure { term = T.mkAny; type = V.vU 0; }
-      else if t == "desc" then pure { term = T.mkDesc; type = V.vU 1; }
+      # desc I — takes an index type. `desc I : U(1)`.
+      else if t == "desc" then
+        bind (self.check ctx tm.I (V.vU 0)) (iTm:
+          pure { term = T.mkDesc iTm; type = V.vU 1; })
 
+      # desc-ret j — `ret j : Desc I` where I is inferred from j's type.
       else if t == "desc-ret" then
-        pure { term = T.mkDescRet; type = V.vDesc; }
+        bind (self.infer ctx tm.j) (jResult:
+          pure { term = T.mkDescRet jResult.term; type = V.vDesc jResult.type; })
 
       # desc-arg (§2.4). `S` must live in `V.vU 0`: descriptions carry
       # only small types, so any description argument type is in U 0.
-      #
-      # User-facing consequence through the datatype macro: a data field
-      # `field name S` compiles to `descArg S _`, so `S` is restricted to
-      # U 0 — a field cannot hold a value of type `U 0` itself, nor of a
-      # type family like `Π Obj. Π Obj. U 0`, since both live at U 1. The
-      # workaround is to lift such components out of the constructor and
-      # make them `datatypeP` parameters; parameters thread through
-      # `paramPi` (a plain Π-binder) and so accept any universe.
-      #
-      # When the kernel gains a universe-polymorphic `desc-arg` (tracking
-      # the argument's level on the output Desc), revisit the category-
-      # theory library under `apps/category-theory/`: `CategoryDT`,
-      # `MonoidHomDT`, and `FunctorDT` currently encode their universe-
-      # typed components as parameters purely because of this rule. Once
-      # the restriction is gone, data-field encodings become available
-      # and either approach is a matter of style.
+      # The body `T : S → Desc I` is inferred to determine I.
       else if t == "desc-arg" then
         bind (self.check ctx tm.S (V.vU 0)) (sTm:
           let sVal = E.eval ctx.env sTm;
               ctx' = self.extend ctx "_" sVal;
-          in bind (self.check ctx' tm.T V.vDesc) (tTm:
-            pure { term = T.mkDescArg sTm tTm; type = V.vDesc; }))
+          in bind (self.infer ctx' tm.T) (tResult:
+            if tResult.type.tag != "VDesc"
+            then typeError "desc-arg: body must have type Desc I"
+              { tag = "desc"; } (Q.quote ctx'.depth tResult.type) tm.T
+            else
+              pure { term = T.mkDescArg sTm tResult.term;
+                     type = V.vDesc tResult.type.I; }))
 
+      # desc-rec j D — `rec j D : Desc I`. Infer j's type to get I,
+      # then check D against Desc I.
       else if t == "desc-rec" then
-        bind (self.check ctx tm.D V.vDesc) (dTm:
-          pure { term = T.mkDescRec dTm; type = V.vDesc; })
+        bind (self.infer ctx tm.j) (jResult:
+          let iVal = jResult.type; in
+          bind (self.check ctx tm.D (V.vDesc iVal)) (dTm:
+            pure { term = T.mkDescRec jResult.term dTm;
+                   type = V.vDesc iVal; }))
 
+      # desc-pi S f D — `pi S f D : Desc I` where f : S → I determines I.
       else if t == "desc-pi" then
         bind (self.check ctx tm.S (V.vU 0)) (sTm:
-          bind (self.check ctx tm.D V.vDesc) (dTm:
-            pure { term = T.mkDescPi sTm dTm; type = V.vDesc; }))
+          let sVal = E.eval ctx.env sTm;
+          in bind (self.infer ctx tm.f) (fResult:
+            let fTy = fResult.type; in
+            if fTy.tag != "VPi"
+            then typeError "desc-pi: f must have type S → I"
+              { tag = "pi"; } (Q.quote ctx.depth fTy) tm.f
+            else if !(C.conv ctx.depth fTy.domain sVal)
+            then typeError "desc-pi: f domain does not match S"
+              (Q.quote ctx.depth sVal) (Q.quote ctx.depth fTy.domain) tm.f
+            else
+              # I = codomain (non-dependent on s per the Desc grammar).
+              let iVal = E.instantiate fTy.closure (V.freshVar ctx.depth);
+              in bind (self.check ctx tm.D (V.vDesc iVal)) (dTm:
+                pure { term = T.mkDescPi sTm fResult.term dTm;
+                       type = V.vDesc iVal; })))
 
+      # desc-con D i d — `con : μ D i` packing payload d at index i.
       else if t == "desc-con" then
-        bind (self.check ctx tm.D V.vDesc) (dTm:
-          let dVal = E.eval ctx.env dTm;
-              interpTy = E.interp dVal (V.vMu dVal);
-          in bind (self.check ctx tm.d interpTy) (dataTm:
-            pure { term = T.mkDescCon dTm dataTm; type = V.vMu dVal; }))
+        bind (self.infer ctx tm.D) (dResult:
+          let dTy = dResult.type; in
+          if dTy.tag != "VDesc"
+          then typeError "desc-con: D must have type Desc I"
+            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
+          else
+            let iTyVal = dTy.I;
+                dVal = E.eval ctx.env dResult.term;
+            in bind (self.check ctx tm.i iTyVal) (iTm:
+              let iVal = E.eval ctx.env iTm;
+                  # X = λ(_i:I). μ I D _i as a VLam so interp can apply it.
+                  muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
+                    (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
+                  interpTy = E.interp iTyVal dVal muDFunc iVal;
+              in bind (self.check ctx tm.d interpTy) (dataTm:
+                pure { term = T.mkDescCon dResult.term iTm dataTm;
+                       type = V.vMu iTyVal dVal iVal; })))
 
       else if t == "desc-elim" then
-        bind (self.checkMotive ctx tm.motive V.vDesc) (pTm:
-          let pVal = E.eval ctx.env pTm;
-              prTy = E.vApp pVal V.vDescRet;
-              pQ1 = Q.quote (ctx.depth + 1) pVal;
-              pQ2 = Q.quote (ctx.depth + 2) pVal;
-              pQ3 = Q.quote (ctx.depth + 3) pVal;
-              # pa : Π(S:U(0)). Π(T:S→Desc). (Π(s:S). P(T s)) → P(arg S T)
-              paTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
-                (T.mkPi "T" (T.mkPi "_" (T.mkVar 0) T.mkDesc)
-                  (T.mkPi "ih" (T.mkPi "s" (T.mkVar 1)
-                      (T.mkApp pQ3 (T.mkApp (T.mkVar 1) (T.mkVar 0))))
-                    (T.mkApp pQ3
-                      (T.mkDescArg (T.mkVar 2) (T.mkApp (T.mkVar 2) (T.mkVar 0)))))));
-              # pe : Π(D:Desc). P D → P(rec D)
-              peTy = V.vPi "D" V.vDesc (V.mkClosure ctx.env
-                (T.mkPi "ih" (T.mkApp pQ1 (T.mkVar 0))
-                  (T.mkApp pQ2 (T.mkDescRec (T.mkVar 1)))));
-              # pp : Π(S:U(0)). Π(D:Desc). P D → P(pi S D)
-              ppTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
-                (T.mkPi "D" T.mkDesc
-                  (T.mkPi "ih" (T.mkApp pQ2 (T.mkVar 0))
-                    (T.mkApp pQ3 (T.mkDescPi (T.mkVar 2) (T.mkVar 1))))));
-          in bind (self.check ctx tm.onRet prTy) (prTm:
-            bind (self.check ctx tm.onArg paTy) (paTm:
-              bind (self.check ctx tm.onRec peTy) (peTm:
-                bind (self.check ctx tm.onPi ppTy) (ppTm:
-                  bind (self.check ctx tm.scrut V.vDesc) (sTm:
-                    let retTy = E.vApp pVal (E.eval ctx.env sTm); in
-                    pure { term = T.mkDescElim pTm prTm paTm peTm ppTm sTm;
-                           type = retTy; }))))))
+        # I is recovered from the scrutinee's inferred type (Desc I),
+        # not the motive's — the motive may be a bare lam (as built by
+        # interpHoas / allHoas in hoas/desc.nix), for which synthesis has
+        # no rule. checkMotive accepts bare lams by descending under the
+        # known domain, and preserves large elim (motive body may return
+        # any universe level).
+        bind (self.infer ctx tm.scrut) (sResult:
+          let sTy = sResult.type; in
+          if sTy.tag != "VDesc"
+          then typeError "desc-elim: scrutinee must have type Desc I"
+            { tag = "desc"; } (Q.quote ctx.depth sTy) tm.scrut
+          else
+            let
+              iTyVal = sTy.I;
+              iTyTm = Q.quote ctx.depth iTyVal;
+            in bind (self.checkMotive ctx tm.motive (V.vDesc iTyVal)) (pTm:
+              let
+                pVal = E.eval ctx.env pTm;
+                pQ1 = Q.quote (ctx.depth + 1) pVal;
+                pQ2 = Q.quote (ctx.depth + 2) pVal;
+                pQ3 = Q.quote (ctx.depth + 3) pVal;
+                pQ4 = Q.quote (ctx.depth + 4) pVal;
+                # pr : Π(j:I). P (ret j)
+                prTy = V.vPi "j" iTyVal (V.mkClosure ctx.env
+                  (T.mkApp pQ1 (T.mkDescRet (T.mkVar 0))));
+                # pa : Π(S:U(0)). Π(T:S→Desc I). (Π(s:S). P (T s)) → P (arg S T)
+                paTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
+                  (T.mkPi "T" (T.mkPi "_" (T.mkVar 0) (T.mkDesc iTyTm))
+                    (T.mkPi "ih" (T.mkPi "s" (T.mkVar 1)
+                        (T.mkApp pQ3 (T.mkApp (T.mkVar 1) (T.mkVar 0))))
+                      (T.mkApp pQ3
+                        (T.mkDescArg (T.mkVar 2)
+                          (T.mkApp (T.mkVar 2) (T.mkVar 0)))))));
+                # pe : Π(j:I). Π(D:Desc I). P D → P (rec j D)
+                peTy = V.vPi "j" iTyVal (V.mkClosure ctx.env
+                  (T.mkPi "D" (T.mkDesc iTyTm)
+                    (T.mkPi "ih" (T.mkApp pQ2 (T.mkVar 0))
+                      (T.mkApp pQ3 (T.mkDescRec (T.mkVar 2) (T.mkVar 1))))));
+                # pp : Π(S:U(0)). Π(f:S→I). Π(D:Desc I). P D → P (pi S f D)
+                ppTy = V.vPi "S" (V.vU 0) (V.mkClosure ctx.env
+                  (T.mkPi "f" (T.mkPi "_" (T.mkVar 0) iTyTm)
+                    (T.mkPi "D" (T.mkDesc iTyTm)
+                      (T.mkPi "ih" (T.mkApp pQ3 (T.mkVar 0))
+                        (T.mkApp pQ4
+                          (T.mkDescPi (T.mkVar 3) (T.mkVar 2) (T.mkVar 1)))))));
+              in bind (self.check ctx tm.onRet prTy) (prTm:
+                bind (self.check ctx tm.onArg paTy) (paTm:
+                  bind (self.check ctx tm.onRec peTy) (peTm:
+                    bind (self.check ctx tm.onPi ppTy) (ppTm:
+                      let retTy = E.vApp pVal (E.eval ctx.env sResult.term); in
+                      pure { term = T.mkDescElim pTm prTm paTm peTm ppTm sResult.term;
+                             type = retTy; }))))))
 
       else if t == "desc-ind" then
-        bind (self.check ctx tm.D V.vDesc) (dTm:
-          let dVal = E.eval ctx.env dTm;
-          in bind (self.checkMotive ctx tm.motive (V.vMu dVal)) (pTm:
+        bind (self.infer ctx tm.D) (dResult:
+          let dTy = dResult.type; in
+          if dTy.tag != "VDesc"
+          then typeError "desc-ind: D must have type Desc I"
+            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
+          else
             let
-              pVal = E.eval ctx.env pTm;
-              interpTy = E.interp dVal (V.vMu dVal);
-              # step : Π(d : ⟦D⟧(μ D)). All D P d → P(con d)
-              dVar = V.freshVar ctx.depth;
-              allTyVal = E.allTy dVal dVal pVal dVar;
-              retTyVal = E.vApp pVal (V.vDescCon dVal dVar);
-              stepTy = V.vPi "d" interpTy (V.mkClosure ctx.env
-                (T.mkPi "_" (Q.quote (ctx.depth + 1) allTyVal)
-                  (Q.quote (ctx.depth + 2) retTyVal)));
-            in bind (self.check ctx tm.step stepTy) (sTm:
-              bind (self.check ctx tm.scrut (V.vMu dVal)) (xTm:
-                let retTy = E.vApp pVal (E.eval ctx.env xTm); in
-                pure { term = T.mkDescInd dTm pTm sTm xTm; type = retTy; }))))
+              iTyVal = dTy.I;
+              iTyTm1 = Q.quote (ctx.depth + 1) iTyVal;
+              dTm = dResult.term;
+              dVal = E.eval ctx.env dTm;
+              # motive : (i:I) → μ I D i → U(k)
+              motiveTy = V.vPi "i" iTyVal (V.mkClosure ctx.env
+                (T.mkPi "_"
+                  (T.mkMu iTyTm1 (Q.quote (ctx.depth + 1) dVal) (T.mkVar 0))
+                  (T.mkU 0)));
+            in bind (self.check ctx tm.motive motiveTy) (pTm:
+              let
+                pVal = E.eval ctx.env pTm;
+                # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
+                iVar = V.freshVar ctx.depth;
+                muDFunc1 = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
+                  (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
+                interpTyAtI = E.interp iTyVal dVal muDFunc1 iVar;
+                dVar = V.freshVar (ctx.depth + 1);
+                allTyAtI = E.allTy iTyVal dVal dVal pVal iVar dVar;
+                retTyAtI = E.vApp (E.vApp pVal iVar) (V.vDescCon dVal iVar dVar);
+                stepTy = V.vPi "i" iTyVal (V.mkClosure ctx.env
+                  (T.mkPi "d" (Q.quote (ctx.depth + 1) interpTyAtI)
+                    (T.mkPi "_" (Q.quote (ctx.depth + 2) allTyAtI)
+                      (Q.quote (ctx.depth + 3) retTyAtI))));
+              in bind (self.check ctx tm.step stepTy) (stepTm:
+                bind (self.check ctx tm.i iTyVal) (iTm:
+                  let iVal = E.eval ctx.env iTm; in
+                  bind (self.check ctx tm.scrut (V.vMu iTyVal dVal iVal)) (xTm:
+                    let retTy = E.vApp (E.vApp pVal iVal)
+                                  (E.eval ctx.env xTm); in
+                    pure { term = T.mkDescInd dTm pTm stepTm iTm xTm;
+                           type = retTy; })))))
 
       # Primitive literals infer their types
       else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }

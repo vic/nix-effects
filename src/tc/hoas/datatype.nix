@@ -72,10 +72,13 @@ in {
 
     # payloadTuple xs : Hoas
     # Build a right-nested pair from an ordered list of HOAS terms.
-    # Empty list is the unit `tt`.
+    # The terminator is `refl` — every call site feeds this into a
+    # `descCon` at a ret-leaf of its description, where the payload's
+    # innermost component inhabits `Eq I j i` (at I=⊤, `refl` witnesses
+    # `Eq ⊤ tt tt`).
     payloadTuple = xs:
-      let inherit (self) pair tt payloadTuple; in
-      if xs == [] then tt
+      let inherit (self) pair refl payloadTuple; in
+      if xs == [] then refl
       else pair (builtins.head xs) (payloadTuple (builtins.tail xs));
 
     # encodeTag t n payload : Hoas
@@ -93,7 +96,8 @@ in {
     datatype = name: consList:
       let
         inherit (self)
-          u desc forall lam mu app ann fst_ snd_ pair false_ bool
+          u desc forall lam let_ mu app ann fst_ snd_ pair true_ false_ tt unit bool
+          eq refl j
           descCon descInd boolElim interpHoas allHoas
           conDesc spineDesc payloadTuple encodeTag;
 
@@ -111,8 +115,22 @@ in {
           in builtins.foldl' step null idxs;
 
         conDescs = map (c: conDesc {} c.fields) consList;
-        D = spineDesc conDescs;
-        T = mu D;
+        # ann-wrap discipline: the description spine contains bare canonical
+        # forms at I=⊤ (e.g., `descRet` carries `tt` at its j position, which
+        # has no infer rule under bidirectional discipline). The outer `ann
+        # _ desc` lets every consumer (the `mu` type rule, `descCon`'s D,
+        # `descInd`'s D) check the spine in CHECK mode against `Desc ⊤`,
+        # where the bare canonical forms are accepted by the existing check
+        # rules.
+        D = ann (spineDesc conDescs) desc;
+        T = mu D tt;
+
+        # Index-family machinery for the indexed `descInd`. The datatype
+        # macro lives at the I=⊤ slice: `muFam _ = μ D tt`, and the
+        # wrapped motive `Pp i x = P x` (β-reducing via conv on the user
+        # motive `P : T → U`).
+        muFam = lam "_i" unit (iArg: mu D iArg);
+        ppTy = forall "i" unit (iArg: forall "_" (mu D iArg) (_: u 0));
 
         # Type of field f, given `prev` (markers for earlier data/dataD
         # fields). data/dataD bind a description-level variable visible to
@@ -159,12 +177,12 @@ in {
         # surface.
         mkCtor = i: c:
           if c.fields == []
-          then descCon D (encodeTag i n (payloadTuple []))
+          then descCon D tt (encodeTag i n (payloadTuple []))
           else
             let
               bareGo = remaining: prev: collected:
                 if remaining == [] then
-                  descCon D (encodeTag i n (payloadTuple collected))
+                  descCon D tt (encodeTag i n (payloadTuple collected))
                 else
                   let f = builtins.head remaining;
                       rest = builtins.tail remaining;
@@ -275,18 +293,68 @@ in {
               withIHs = builtins.foldl' (acc: a: app acc a) withFields ihArgs;
             in withIHs;
 
-        # dispatchStep P ctx descs steps cons payload payloadIH : Hoas
+        # dispatchStep Pp iArg ctx descs steps cons payload payloadIH : Hoas
         # Walks the per-constructor descriptions in declaration order,
         # threading an outer-context wrapper `ctx` that reconstitutes the
         # full payload at each level (used in the boolElim motive so conv
-        # discharges P(descCon D (ctx ...)) ≡ P(C_i ...) via Σ-η + ⊤-η).
-        # n=1 (leaf) returns the user step applied to its projections;
-        # n>=2 emits a boolElim that commits to constructor i on `true_`
-        # and descends into the rest-spine on `false_`.
-        dispatchStep = P: ctx: descs: steps: cons: payload: payloadIH:
-          let n' = builtins.length descs; in
+        # discharges Pp iArg (descCon D iArg (ctx ...)) ≡ P (C_i ...) via
+        # Pp-β + Σ-η + ⊤-η + J-transport on the leaf Eq witness). Pp is
+        # the indexed motive wrapper `λi λx. P x` — applying `Pp iArg`
+        # β-reduces to the user motive `P` at any typed `x`.
+        # n=1 (leaf) wraps the user step in J-transport over the leaf Eq
+        # witness; n>=2 emits a boolElim that commits to constructor i on
+        # `true_` (also J-transported) and descends into the rest-spine
+        # on `false_`.
+        #
+        # J-transport (jTransportLeaf payloadCtx c r userApplied):
+        # The user step `s` produces `userApplied : app Pp tt (descCon D tt
+        # (payloadCtx (pair f_0 (... (pair f_{k-1} refl)))))` where each
+        # f_i = fst(snd^i r) and the leaf is the macro-inserted `refl`.
+        # The expected type is `app Pp iArg (descCon D iArg (payloadCtx
+        # (pair f_0 (... (pair f_{k-1} snd^k r)))))` — same modulo the
+        # iArg position and the leaf Eq witness `snd^k r : Eq ⊤ tt iArg`.
+        # MLTT without K cannot conv `VRefl ≡ VNe(eq)`; J is the sanctioned
+        # transport. Motive `M(y,e) = app Pp y (descCon D y (payloadCtx
+        # (pair f_0 (... (pair f_{k-1} e)))))`; base `M(tt, refl) ≡
+        # userApplied`; result `M(iArg, snd^k r)` matches the expected type.
+        # k=0 corner: r ITSELF is the Eq witness and `payloadCtx e` is the
+        # full payload at the leaf.
+        dispatchStep = Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
+          let
+            n' = builtins.length descs;
+
+            jTransportLeaf = payloadCtx: c: r: userApplied:
+              let
+                k = builtins.length c.fields;
+                projAt = i: src:
+                  let go = idx: acc:
+                    if idx == 0 then fst_ acc
+                    else go (idx - 1) (snd_ acc);
+                  in go i src;
+                sndN = i: src:
+                  let go = idx: acc:
+                    if idx == 0 then acc
+                    else go (idx - 1) (snd_ acc);
+                  in go i src;
+                eLeaf = sndN k r;
+                buildPayload = e:
+                  let
+                    go = i:
+                      if i == k then e
+                      else pair (projAt i r) (go (i + 1));
+                  in go 0;
+                motive = lam "y" unit (y:
+                         lam "e" (eq unit tt y) (e:
+                           app (app Pp y)
+                               (descCon D y (payloadCtx (buildPayload e)))));
+              in j unit tt motive userApplied iArg eLeaf;
+          in
           if n' == 1 then
-            buildStepApply (builtins.head steps) (builtins.head cons) payload payloadIH
+            let
+              c = builtins.head cons;
+              s = builtins.head steps;
+              applied = buildStepApply s c payload payloadIH;
+            in jTransportLeaf ctx c payload applied
           else
             let
               D1 = builtins.elemAt descs 0;
@@ -299,16 +367,17 @@ in {
               subDescAt = b:
                 boolElim (lam "_" bool (_: desc)) D1 restSpine b;
               motive = lam "b" bool (b:
-                forall "r" (interpHoas (subDescAt b) T) (r:
-                forall "rih" (allHoas D (subDescAt b) P r) (_:
-                  app P (descCon D (ctx (pair b r))))));
-              onTrue = lam "r" (interpHoas D1 T) (r:
-                       lam "rih" (allHoas D D1 P r) (rih:
-                         buildStepApply s1 c1 r rih));
+                forall "r" (interpHoas unit (subDescAt b) muFam iArg) (r:
+                forall "rih" (allHoas unit D (subDescAt b) Pp iArg r) (_:
+                  app (app Pp iArg) (descCon D iArg (ctx (pair b r))))));
+              onTrue = lam "r" (interpHoas unit D1 muFam iArg) (r:
+                       lam "rih" (allHoas unit D D1 Pp iArg r) (rih:
+                         jTransportLeaf (local: ctx (pair true_ local)) c1 r
+                           (buildStepApply s1 c1 r rih)));
               ctx' = local: ctx (pair false_ local);
-              onFalse = lam "r" (interpHoas restSpine T) (r:
-                        lam "rih" (allHoas D restSpine P r) (rih:
-                          dispatchStep P ctx' restD restS restC r rih));
+              onFalse = lam "r" (interpHoas unit restSpine muFam iArg) (r:
+                        lam "rih" (allHoas unit D restSpine Pp iArg r) (rih:
+                          dispatchStep Pp iArg ctx' restD restS restC r rih));
             in app (app
                  (boolElim motive onTrue onFalse (fst_ payload))
                  (snd_ payload))
@@ -355,11 +424,15 @@ in {
           lam "P" motiveTy (P:
           buildLamCascade (steps:
             lam "scrut" T (scrut:
-              descInd D P
-                (lam "d" (interpHoas D T) (d:
-                 lam "ih" (allHoas D D P d) (ih:
-                   dispatchStep P (x: x) conDescs steps consList d ih)))
-                scrut))
+              let_ "Pp" ppTy
+                (lam "i" unit (_: lam "x" (mu D tt) (x: app P x))) (Pp:
+                descInd D Pp
+                  (lam "i" unit (iArg:
+                   lam "d" (interpHoas unit D muFam iArg) (d:
+                   lam "ih" (allHoas unit D D Pp iArg d) (ih:
+                     dispatchStep Pp iArg (x: x) conDescs steps consList d ih))))
+                  tt
+                  scrut)))
             P);
 
         elim = ann elimBody elimTy;

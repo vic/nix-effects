@@ -171,6 +171,42 @@ in {
               (Q.quote ctx.depth ty.domain) (Q.quote ctx.depth piTyVal.domain) tm
           else pure (T.mkOpaqueLam tm._fnBox piTyTm))
 
+      # desc-ret checked against Desc I — j must inhabit the index type.
+      else if t == "desc-ret" && ty.tag == "VDesc" then
+        bind (self.check ctx tm.j ty.I) (jTm:
+          pure (T.mkDescRet jTm))
+
+      # desc-arg checked against Desc I — S : U(0), then the body T is
+      # a Desc I in the context extended by `_ : S` (T is the closure
+      # body, not a lambda; the binding is materialised at eval time
+      # via `mkClosure env tm.T`).
+      else if t == "desc-arg" && ty.tag == "VDesc" then
+        bind (self.check ctx tm.S (V.vU 0)) (sTm:
+          let sVal = E.eval ctx.env sTm;
+              ctx' = self.extend ctx "_" sVal;
+          in bind (self.check ctx' tm.T (V.vDesc ty.I)) (tTm:
+            pure (T.mkDescArg sTm tTm)))
+
+      # desc-rec checked against Desc I — j : I picks the recursive
+      # child's index, and the tail D : Desc I continues the description.
+      else if t == "desc-rec" && ty.tag == "VDesc" then
+        bind (self.check ctx tm.j ty.I) (jTm:
+          bind (self.check ctx tm.D (V.vDesc ty.I)) (dTm:
+            pure (T.mkDescRec jTm dTm)))
+
+      # desc-pi checked against Desc I — S : U(0), f : S → I selects
+      # the index per branch, and the tail D : Desc I continues. f's Pi
+      # type is built with a non-dependent codomain quoting ty.I at the
+      # closure-body depth.
+      else if t == "desc-pi" && ty.tag == "VDesc" then
+        bind (self.check ctx tm.S (V.vU 0)) (sTm:
+          let sVal = E.eval ctx.env sTm;
+              fTy = V.vPi "_" sVal (V.mkClosure ctx.env
+                (Q.quote (ctx.depth + 1) ty.I));
+          in bind (self.check ctx tm.f fTy) (fTm:
+            bind (self.check ctx tm.D (V.vDesc ty.I)) (dTm:
+              pure (T.mkDescPi sTm fTm dTm))))
+
       # desc-con checked against Mu — trampolined for deep recursive data
       # (5000+). Peels a homogeneous desc-con chain along its single
       # recursive position. The outer D's false-branch shape drives
@@ -180,91 +216,98 @@ in {
       # rec tail. Non-linear shapes (tree, mutual recursion) fall through
       # to per-layer checking.
       #
-      # D-sharing across layers: fast path is structural equality of the
-      # D subterm (holds when elaborate emits a shared dTm per chain);
-      # fallback is conv-equality of the evaluated D against the outer
-      # dVal.
+      # Each layer carries its own target index `i : I` via the 3-arg
+      # `mkDescCon D i d`. The trampoline checks `layer.i : I` and
+      # conv-matches against the expected index (ty.i at the top of the
+      # chain, the rec position's `j` at successors). The payload type
+      # at each layer is `interp I D μD layer.i`.
       else if t == "desc-con" && ty.tag == "VMu" then
-        bind (self.check ctx tm.D V.vDesc) (dTm:
-          let dVal = E.eval ctx.env dTm; in
+        let iTyVal = ty.I;
+        in bind (self.check ctx tm.D (V.vDesc iTyVal)) (dTm:
+          let dVal = E.eval ctx.env dTm;
+              muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
+                (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
+          in
           if !(C.conv ctx.depth dVal ty.D)
           then typeError "desc-con description mismatch"
             (Q.quote ctx.depth ty.D) (Q.quote ctx.depth dVal) tm
-          else
-            let
-              subFalse =
-                if ty.D.tag != "VDescArg" then null
-                else E.instantiate ty.D.T V.vFalse;
-              profile = if subFalse == null then null else E.linearProfile subFalse;
-              nFields = if profile == null then 0 else builtins.length profile;
-              sameD = d2Tm:
-                if d2Tm == tm.D then true
-                else C.conv ctx.depth (E.eval ctx.env d2Tm) dVal;
-              walkPayload = payload:
-                if payload.tag != "pair" then null
-                else if payload.fst.tag != "false" then null
-                else
-                  let
-                    collect = i: p: acc:
-                      if i == nFields then
-                        if p.tag != "pair" then null
-                        else if p.snd.tag != "tt" then null
-                        else if p.fst.tag != "desc-con" then null
-                        else { heads = acc; tail = p.fst; }
-                      else
-                        if p.tag != "pair" then null
-                        else collect (i + 1) p.snd (acc ++ [p.fst]);
-                  in collect 0 payload.snd [];
-              peel = node:
-                if profile == null then null
-                else if node.tag != "desc-con" then null
-                else if !(sameD node.D) then null
-                else walkPayload node.d;
-              # Integer key is sufficient for genericClosure dedup. `peel` is
-              # O(1) field inspection returning a reference to an existing
-              # sub-Tm of the concrete `tm`; no deferred continuation work
-              # accumulates across steps, so the deepSeq-in-key defensive
-              # pattern from fx/trampoline.nix is not needed here and would
-              # add O(N²) cost.
-              chain = builtins.genericClosure {
-                startSet = [{ key = 0; val = tm; }];
-                operator = item:
-                  let peeled = peel item.val; in
-                  if peeled == null then []
-                  else [{ key = item.key + 1; val = peeled.tail; }];
-              };
-              n = builtins.length chain - 1;
-              base = (builtins.elemAt chain n).val;
-              interpTy = E.interp ty.D (V.vMu ty.D);
-            in bind (self.check ctx base.d interpTy) (baseDataTm:
-              let baseTm = T.mkDescCon dTm baseDataTm; in
-              builtins.foldl' (accComp: i:
-                let
-                  layer = (builtins.elemAt chain (n - 1 - i)).val;
-                  peeled = peel layer;
-                  heads = peeled.heads;
-                  checkHeads = remaining: accTms:
-                    if remaining == [] then pure accTms
-                    else
-                      let
-                        h = builtins.head remaining;
-                        rest = builtins.tail remaining;
-                      in bind (self.check ctx h.head h.S) (hTm:
-                        checkHeads rest (accTms ++ [hTm]));
-                  tasks = builtins.genList (j:
-                    { head = builtins.elemAt heads j;
-                      S = (builtins.elemAt profile j).S;
-                    }) nFields;
-                  buildInner = hTms: innerTail:
-                    if hTms == [] then innerTail
-                    else T.mkPair (builtins.head hTms)
-                                  (buildInner (builtins.tail hTms) innerTail);
-                in bind accComp (acc:
-                  bind (checkHeads tasks []) (hTms:
-                    pure (T.mkDescCon dTm
-                      (T.mkPair T.mkFalse
-                        (buildInner hTms (T.mkPair acc T.mkTt))))))
-              ) (pure baseTm) (builtins.genList (x: x) n)))
+          else bind (self.check ctx tm.i iTyVal) (topITm:
+            let topIVal = E.eval ctx.env topITm; in
+            if !(C.conv ctx.depth topIVal ty.i)
+            then typeError "desc-con target index mismatch"
+              (Q.quote ctx.depth ty.i) (Q.quote ctx.depth topIVal) tm
+            else
+              let
+                subFalse =
+                  if ty.D.tag != "VDescArg" then null
+                  else E.instantiate ty.D.T V.vFalse;
+                profile = if subFalse == null then null else E.linearProfile subFalse;
+                nFields = if profile == null then 0 else builtins.length profile;
+                sameD = d2Tm:
+                  if d2Tm == tm.D then true
+                  else C.conv ctx.depth (E.eval ctx.env d2Tm) dVal;
+                walkPayload = payload:
+                  if payload.tag != "pair" then null
+                  else if payload.fst.tag != "false" then null
+                  else
+                    let
+                      collect = k: p: acc:
+                        if k == nFields then
+                          if p.tag != "pair" then null
+                          else if p.snd.tag != "refl" then null
+                          else if p.fst.tag != "desc-con" then null
+                          else { heads = acc; tail = p.fst; }
+                        else
+                          if p.tag != "pair" then null
+                          else collect (k + 1) p.snd (acc ++ [p.fst]);
+                    in collect 0 payload.snd [];
+                peel = node:
+                  if profile == null then null
+                  else if node.tag != "desc-con" then null
+                  else if !(sameD node.D) then null
+                  else walkPayload node.d;
+                chain = builtins.genericClosure {
+                  startSet = [{ key = 0; val = tm; }];
+                  operator = item:
+                    let peeled = peel item.val; in
+                    if peeled == null then []
+                    else [{ key = item.key + 1; val = peeled.tail; }];
+                };
+                n = builtins.length chain - 1;
+                base = (builtins.elemAt chain n).val;
+              in bind (self.check ctx base.i iTyVal) (baseITm:
+                let baseIVal = E.eval ctx.env baseITm;
+                    interpTyBase = E.interp iTyVal ty.D muDFunc baseIVal;
+                in bind (self.check ctx base.d interpTyBase) (baseDataTm:
+                  let baseTm = T.mkDescCon dTm baseITm baseDataTm; in
+                  builtins.foldl' (accComp: k:
+                    let
+                      layer = (builtins.elemAt chain (n - 1 - k)).val;
+                      peeled = peel layer;
+                      heads = peeled.heads;
+                      checkHeads = remaining: accTms:
+                        if remaining == [] then pure accTms
+                        else
+                          let
+                            h = builtins.head remaining;
+                            rest = builtins.tail remaining;
+                          in bind (self.check ctx h.head h.S) (hTm:
+                            checkHeads rest (accTms ++ [hTm]));
+                      tasks = builtins.genList (j:
+                        { head = builtins.elemAt heads j;
+                          S = (builtins.elemAt profile j).S;
+                        }) nFields;
+                      buildInner = hTms: innerTail:
+                        if hTms == [] then innerTail
+                        else T.mkPair (builtins.head hTms)
+                                      (buildInner (builtins.tail hTms) innerTail);
+                    in bind accComp (acc:
+                      bind (self.check ctx layer.i iTyVal) (layerITm:
+                        bind (checkHeads tasks []) (hTms:
+                          pure (T.mkDescCon dTm layerITm
+                            (T.mkPair T.mkFalse
+                              (buildInner hTms (T.mkPair acc T.mkRefl)))))))
+                  ) (pure baseTm) (builtins.genList (x: x) n)))))
 
       # Sub rule (§7.4): fall through to synthesis, with cumulativity
       # for universes (§8.3: VU(i) ≤ VU(j) when i ≤ j).

@@ -90,8 +90,12 @@ api.mk {
       opaqueLam strEq absurd ann app fst_ snd_;
     # Eliminators
     inherit (self) ind boolElim listElim sumElim j;
-    # Descriptions — types, constructors, eliminators
-    inherit (self) desc mu descRet descArg descRec descPi descCon descInd descElim;
+    # Descriptions — types, constructors, eliminators.
+    # `descI`/`retI`/`recI`/`piI`/`muI` build `Desc I` / `μ I D i` at an
+    # arbitrary index type; `desc`/`descRet`/`descRec`/`descPi`/`mu` are
+    # ⊤-slice aliases that specialise I to `Unit`.
+    inherit (self) descI desc muI mu retI recI piI
+                   descRet descArg descRec descPi descCon descInd descElim;
     # Description-level helpers and prelude descriptions
     inherit (self) interpHoas allHoas natDesc listDesc sumDesc natDescTm;
     # Datatype macro

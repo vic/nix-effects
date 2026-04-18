@@ -71,16 +71,16 @@ let
   mkJ = type: lhs: motive: base: rhs: eq:
     { tag = "j"; inherit type lhs motive base rhs eq; };
 
-  # -- Descriptions (non-indexed, I = ⊤) --
-  mkDesc = { tag = "desc"; };
-  mkDescRet = { tag = "desc-ret"; };
+  # -- Descriptions --
+  mkDesc = I: { tag = "desc"; inherit I; };
+  mkDescRet = j: { tag = "desc-ret"; inherit j; };
   mkDescArg = S: T: { tag = "desc-arg"; inherit S T; };
-  mkDescRec = D: { tag = "desc-rec"; inherit D; };
-  mkDescPi = S: D: { tag = "desc-pi"; inherit S D; };
-  mkMu = D: { tag = "mu"; inherit D; };
-  mkDescCon = D: d: { tag = "desc-con"; inherit D d; };
-  mkDescInd = D: motive: step: scrut:
-    { tag = "desc-ind"; inherit D motive step scrut; };
+  mkDescRec = j: D: { tag = "desc-rec"; inherit j D; };
+  mkDescPi = S: f: D: { tag = "desc-pi"; inherit S f D; };
+  mkMu = I: D: i: { tag = "mu"; inherit I D i; };
+  mkDescCon = D: i: d: { tag = "desc-con"; inherit D i d; };
+  mkDescInd = D: motive: step: i: scrut:
+    { tag = "desc-ind"; inherit D motive step i scrut; };
   mkDescElim = motive: onRet: onArg: onRec: onPi: scrut:
     { tag = "desc-elim"; inherit motive onRet onArg onRec onPi scrut; };
 
@@ -245,30 +245,62 @@ in mk {
     "opaque-lam-piTy" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat).piTy.tag; expected = "nat"; };
     "opaque-lam-fnBox" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat)._fnBox ? _fn; expected = true; };
 
-    # Descriptions
-    "desc-tag" = { expr = mkDesc.tag; expected = "desc"; };
-    "desc-ret-tag" = { expr = mkDescRet.tag; expected = "desc-ret"; };
-    "desc-arg-tag" = { expr = (mkDescArg mkBool mkDescRet).tag; expected = "desc-arg"; };
-    "desc-arg-S" = { expr = (mkDescArg mkBool mkDescRet).S.tag; expected = "bool"; };
-    "desc-rec-tag" = { expr = (mkDescRec mkDescRet).tag; expected = "desc-rec"; };
-    "desc-rec-D" = { expr = (mkDescRec mkDescRet).D.tag; expected = "desc-ret"; };
-    "desc-pi-tag" = { expr = (mkDescPi mkBool mkDescRet).tag; expected = "desc-pi"; };
-    "desc-pi-S" = { expr = (mkDescPi mkBool mkDescRet).S.tag; expected = "bool"; };
-    "desc-pi-D" = { expr = (mkDescPi mkBool mkDescRet).D.tag; expected = "desc-ret"; };
-    "mu-tag" = { expr = (mkMu mkDescRet).tag; expected = "mu"; };
-    "mu-D" = { expr = (mkMu mkDescRet).D.tag; expected = "desc-ret"; };
-    "desc-con-tag" = { expr = (mkDescCon mkDescRet mkTt).tag; expected = "desc-con"; };
-    "desc-con-D" = { expr = (mkDescCon mkDescRet mkTt).D.tag; expected = "desc-ret"; };
+    # Descriptions (indexed)
+    "desc-tag" = { expr = (mkDesc mkUnit).tag; expected = "desc"; };
+    "desc-I" = { expr = (mkDesc mkUnit).I.tag; expected = "unit"; };
+    "desc-ret-tag" = { expr = (mkDescRet mkTt).tag; expected = "desc-ret"; };
+    "desc-ret-j" = { expr = (mkDescRet mkTt).j.tag; expected = "tt"; };
+    "desc-arg-tag" = { expr = (mkDescArg mkBool (mkDescRet mkTt)).tag; expected = "desc-arg"; };
+    "desc-arg-S" = { expr = (mkDescArg mkBool (mkDescRet mkTt)).S.tag; expected = "bool"; };
+    "desc-rec-tag" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).tag; expected = "desc-rec"; };
+    "desc-rec-j" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).j.tag; expected = "tt"; };
+    "desc-rec-D" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).D.tag; expected = "desc-ret"; };
+    "desc-pi-tag" = {
+      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).tag;
+      expected = "desc-pi";
+    };
+    "desc-pi-S" = {
+      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).S.tag;
+      expected = "bool";
+    };
+    "desc-pi-f" = {
+      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).f.tag;
+      expected = "lam";
+    };
+    "desc-pi-D" = {
+      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).D.tag;
+      expected = "desc-ret";
+    };
+    "mu-tag" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).tag; expected = "mu"; };
+    "mu-I" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).I.tag; expected = "unit"; };
+    "mu-D" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).D.tag; expected = "desc-ret"; };
+    "mu-i" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).i.tag; expected = "tt"; };
+    "desc-con-tag" = {
+      expr = (mkDescCon (mkDescRet mkTt) mkTt mkRefl).tag;
+      expected = "desc-con";
+    };
+    "desc-con-D" = {
+      expr = (mkDescCon (mkDescRet mkTt) mkTt mkRefl).D.tag;
+      expected = "desc-ret";
+    };
+    "desc-con-i" = {
+      expr = (mkDescCon (mkDescRet mkTt) mkTt mkRefl).i.tag;
+      expected = "tt";
+    };
     "desc-ind-tag" = {
-      expr = (mkDescInd mkDescRet (mkVar 0) (mkVar 1) (mkVar 2)).tag;
+      expr = (mkDescInd (mkDescRet mkTt) (mkVar 0) (mkVar 1) mkTt (mkVar 2)).tag;
       expected = "desc-ind";
     };
+    "desc-ind-i" = {
+      expr = (mkDescInd (mkDescRet mkTt) (mkVar 0) (mkVar 1) mkTt (mkVar 2)).i.tag;
+      expected = "tt";
+    };
     "desc-elim-tag" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) mkDescRet).tag;
+      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkDescRet mkTt)).tag;
       expected = "desc-elim";
     };
     "desc-elim-scrut" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) mkDescRet).scrut.tag;
+      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkDescRet mkTt)).scrut.tag;
       expected = "desc-ret";
     };
   };
