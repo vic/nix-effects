@@ -106,12 +106,17 @@ let
           else
             let
               eff = step._comp.effect;
-              handler = handlers.${eff.name} or
-                (throw "nix-effects: unhandled effect '${eff.name}'");
-              result = handler {
-                param = eff.param;
-                state = step._state;
-              };
+              handler = localHandler handlers eff;
+              result = 
+                if handler == null 
+                then 
+                  if eff.name == "has-handler"
+                  then { resume = false; state = step._state; }
+                  else throw "nix-effects: unhandled effect '${eff.name}'"
+                else handler {
+                  param = eff.param;
+                  state = step._state;
+                };
               newState = if result ? state then result.state
                 else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
               # deepSeq newState in key: genericClosure forces key for dedup,
@@ -121,9 +126,18 @@ let
               if result ? abort then
                 [{ key = k; _comp = pure result.abort; _state = newState; }]
               else if result ? resume then
-                [{ key = k;
-                   _comp = resumeCompOrValue step._comp.queue result.resume;
-                   _state = newState; }]
+                let
+                  # Deep handler semantics: rotated effects tag their
+                  # continuation queue with __rawResume. For those, pass
+                  # the resume as-is so the rotation continuation can
+                  # route effectful resumes through inner scope handlers.
+                  resume =
+                    if step._comp.queue.__rawResume or false then
+                      resumeWithQueue step._comp.queue result.resume
+                    else
+                      resumeCompOrValue step._comp.queue result.resume;
+                in
+                [{ key = k; _comp = resume; _state = newState; }]
               else
                 throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
       };
@@ -132,6 +146,14 @@ let
 
   # -- Selective interpreter (handler rotation) --
 
+  localHandler = handlers: eff:
+    if eff.name == "has-handler" then
+      if handlers ? ${eff.param}
+      then { param, state }: { inherit state; resume = true; }
+      else null # causes has-handler to rotate up
+    else
+      handlers.${eff.name} or null;
+
   effectRotateSlow = { comp, handlers, state, done }:
     let
       steps = builtins.genericClosure {
@@ -139,10 +161,12 @@ let
         operator = step:
           if isPure step._comp then []
           else
-            let eff = step._comp.effect; in
-            if handlers ? ${eff.name} then
+            let
+              eff = step._comp.effect;
+              handler = localHandler handlers eff;
+            in if handler != null then
               let
-                result = handlers.${eff.name} {
+                result = handler {
                   param = eff.param;
                   state = step._state;
                 };
@@ -164,23 +188,23 @@ let
     in
       if isPure last._comp then pure (done last._comp.value last._state)
       else
-        impure last._comp.effect (queue.singleton (value:
+        impure last._comp.effect ((queue.singleton (outerResume:
           effectRotate {
-            comp = resumeWithQueue last._comp.queue value;
+            comp = resumeCompOrValue last._comp.queue outerResume;
             handlers = handlers;
             state = last._state;
             inherit done;
-          } 0));
+          } 0)) // { __rawResume = true; });
 
   effectRotate = { comp, handlers, state, done }: depth:
     if isPure comp then pure (done comp.value state)
     else
       let
         eff = comp.effect;
-      in
-      if handlers ? ${eff.name} then
+        handler = localHandler handlers eff;
+      in if handler != null then
         let
-          result = handlers.${eff.name} {
+          result = handler {
             param = eff.param;
             inherit state;
           };
@@ -205,11 +229,17 @@ let
           else
             throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
       else
-        impure eff (queue.singleton (value:
+        # Effect not in scoped handlers — rotate outward.
+        # Deep handler semantics: the continuation routes the outer handler's
+        # resume back through effectRotate. If the resume is a computation
+        # (effectful handler), its effects pass through the inner handlers
+        # first. This matches Koka/Eff behavior where continuations capture
+        # the full handler stack.
+        impure eff ((queue.singleton (outerResume:
           effectRotate {
-            comp = resumeWithQueue comp.queue value;
+            comp = resumeCompOrValue comp.queue outerResume;
             inherit handlers state done;
-          } 0));
+          } 0)) // { __rawResume = true; });
 
   run = mk {
     doc = ''
