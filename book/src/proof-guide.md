@@ -121,9 +121,13 @@ can vary based on the input.
 
 ### Booleans
 
-`BoolElim(motive, trueCase, falseCase, scrutinee)` — case analysis on
-a boolean. With a constant motive (return type doesn't depend on the
-boolean), it's equivalent to an if/else:
+`H.boolElim k motive trueCase falseCase scrutinee` — case analysis on
+a derived boolean. `H.bool` is `μ ⊤ (plus (retI tt) (retI tt)) tt`,
+and `H.boolElim` is defined in terms of `desc-ind` on that
+description (see `src/tc/hoas/combinators.nix`). The user-facing
+behavior is the standard boolean eliminator: with a constant motive
+(return type doesn't depend on the boolean), it's equivalent to an
+if/else.
 
 ```nix
 let
@@ -431,7 +435,7 @@ The `succ` branch receives two arguments: `k` (the predecessor) and
 
 ### Boolean and cross-type elimination
 
-`v.if_` builds a `BoolElim` for verified booleans:
+`v.if_` elaborates to `H.boolElim` on the derived `H.bool`:
 
 ```nix
 # Verified not: Bool → Bool
@@ -525,10 +529,15 @@ normalization, producing `true` or `false` as kernel values.
 
 ## What the kernel can and cannot prove
 
-The nix-effects kernel implements Martin-Löf type theory with universes,
-dependent functions, dependent pairs, identity types, natural numbers,
-booleans, lists, sums, unit, void, and eleven axiomatized Nix
-primitives. It can prove any property that reduces to a comparison of
+The nix-effects kernel implements Martin-Löf type theory with
+universes, dependent functions, dependent pairs, identity types,
+natural numbers, lists, sums, unit, an indexed-description family
+(`Desc I`, `μ`, `desc-ind`), and seven axiomatized Nix primitives
+(String, Int, Float, Attrs, Path, Function, Any). Booleans and Void
+are derived — `H.bool` as `μ ⊤ (plus (retI tt) (retI tt)) tt`,
+`H.void` as `Fin 0` — and come with derived eliminators
+(`H.boolElim` via `desc-ind`, `H.absurd` via a direct `J`-transport).
+The kernel can prove any property that reduces to a comparison of
 normal forms.
 
 **It can prove:**
@@ -560,10 +569,14 @@ normal forms.
   Functions that are extensionally equal but intensionally different are
   not convertible.
 
-- **User-defined recursive types.** The kernel has inductive types (Nat,
-  List, Bool, Sum) built in as eliminators but does not support
-  user-defined inductive families. You cannot define a binary tree or a
-  red-black tree in the kernel.
+- **User-defined recursive types.** The kernel has primitive
+  inductives (Nat, List, Sum) with their own eliminators and an
+  indexed-description family (`Desc I` / `μ` / `desc-ind`) that the
+  macro layer uses to build derived inductives such as `Bool`, `Fin`,
+  `Vec`, and `Eq`-as-description. Arbitrary user-defined inductive
+  families (binary trees, red-black trees, etc.) require the
+  description-macro layer; they are not written directly against the
+  kernel.
 
 For Nix, the "concrete data" restriction is less of a limitation than
 it sounds. Nix evaluates configurations completely before building —
@@ -580,7 +593,7 @@ that matters.
 |---------|------|------------|
 | Computational equality | `Eq(A, x, y)` where `x`, `y` normalize to same value | `Refl` |
 | Dependent witness | `Σ(x:A). P(x)` | `(value, proof)` |
-| Case analysis (bool) | `BoolElim(motive, true_case, false_case, b)` | Result of elimination |
+| Case analysis (bool, derived) | `H.boolElim k motive true_case false_case b` | Result of elimination |
 | Structural recursion (nat) | `NatElim(motive, base, step, n)` | Result of elimination |
 | List recursion | `ListElim(elem, motive, nil_case, cons_case, xs)` | Result of elimination |
 | Sum dispatch | `SumElim(L, R, motive, left_case, right_case, s)` | Result of elimination |
@@ -588,7 +601,7 @@ that matters.
 | Symmetry | `Eq(A,x,y) → Eq(A,y,x)` | `J(A, x, λy'.λ_. Eq(A,y',x), Refl, y, p)` |
 | Transitivity | `Eq(A,x,y) → Eq(A,y,z) → Eq(A,x,z)` | `J(A, y, λz'.λ_. Eq(A,x,z'), p, z, q)` |
 | Transport | `Eq(A,x,y) → P(x) → P(y)` | `J(A, x, λy'.λ_. P(y'), px, y, p)` |
-| Ex falso | `Void → A` | `absurd(A, x)` |
+| Ex falso (derived `H.void = Fin 0`) | `H.void → A` | `H.absurd A x` (routes through `absurdFin0`) |
 | Verified function | `v.verify type impl` | Extracted Nix function |
 
 ## References

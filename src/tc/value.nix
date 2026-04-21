@@ -32,11 +32,6 @@ let
   vZero = { tag = "VZero"; };
   vSucc = pred: { tag = "VSucc"; inherit pred; };
 
-  # Booleans
-  vBool = { tag = "VBool"; };
-  vTrue = { tag = "VTrue"; };
-  vFalse = { tag = "VFalse"; };
-
   # Lists
   vList = elem: { tag = "VList"; inherit elem; };
   vNil = elem: { tag = "VNil"; inherit elem; };
@@ -45,9 +40,6 @@ let
   # Unit
   vUnit = { tag = "VUnit"; };
   vTt = { tag = "VTt"; };
-
-  # Void
-  vVoid = { tag = "VVoid"; };
 
   # Sum
   vSum = left: right: { tag = "VSum"; inherit left right; };
@@ -107,10 +99,8 @@ let
   eFst = { tag = "EFst"; };
   eSnd = { tag = "ESnd"; };
   eNatElim = motive: base: step: { tag = "ENatElim"; inherit motive base step; };
-  eBoolElim = motive: onTrue: onFalse: { tag = "EBoolElim"; inherit motive onTrue onFalse; };
   eListElim = elem: motive: onNil: onCons:
     { tag = "EListElim"; inherit elem motive onNil onCons; };
-  eAbsurd = type: { tag = "EAbsurd"; inherit type; };
   eSumElim = left: right: motive: onLeft: onRight:
     { tag = "ESumElim"; inherit left right motive onLeft onRight; };
   eJ = type: lhs: motive: base: rhs:
@@ -144,10 +134,8 @@ in mk {
     - `vLam`, `vPi` — function values/types (carry name, domain, closure)
     - `vSigma`, `vPair` — pair types/values
     - `vNat`, `vZero`, `vSucc` — natural number values
-    - `vBool`, `vTrue`, `vFalse` — boolean values
     - `vList`, `vNil`, `vCons` — list values
     - `vUnit`, `vTt` — unit
-    - `vVoid` — empty type
     - `vSum`, `vInl`, `vInr` — sum values
     - `vEq`, `vRefl` — identity values
     - `vU` — universe values
@@ -165,17 +153,15 @@ in mk {
     ## Elimination Frames (Spine Entries)
 
     - `eApp`, `eFst`, `eSnd` — function/pair eliminators
-    - `eNatElim`, `eBoolElim`, `eListElim`, `eAbsurd`, `eSumElim`, `eJ` — inductive eliminators
+    - `eNatElim`, `eListElim`, `eSumElim`, `eJ` — inductive eliminators
   '';
   value = {
     inherit mkClosure;
     inherit vLam vPi;
     inherit vSigma vPair;
     inherit vNat vZero vSucc;
-    inherit vBool vTrue vFalse;
     inherit vList vNil vCons;
     inherit vUnit vTt;
-    inherit vVoid;
     inherit vSum vInl vInr;
     inherit vEq vRefl;
     inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
@@ -184,7 +170,7 @@ in mk {
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vOpaqueLam;
     inherit vNe freshVar;
-    inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq eDescInd eDescElim;
+    inherit eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eDescInd eDescElim;
   };
   tests = {
     # Closures
@@ -200,24 +186,20 @@ in mk {
     # Values
     "vlam-tag" = { expr = (vLam "x" vNat (mkClosure [] { tag = "var"; idx = 0; })).tag; expected = "VLam"; };
     "vpi-tag" = { expr = (vPi "x" vNat (mkClosure [] { tag = "nat"; })).tag; expected = "VPi"; };
-    "vsigma-tag" = { expr = (vSigma "x" vNat (mkClosure [] { tag = "bool"; })).tag; expected = "VSigma"; };
-    "vpair-tag" = { expr = (vPair vZero vTrue).tag; expected = "VPair"; };
+    "vsigma-tag" = { expr = (vSigma "x" vNat (mkClosure [] { tag = "nat"; })).tag; expected = "VSigma"; };
+    "vpair-tag" = { expr = (vPair vZero vTt).tag; expected = "VPair"; };
     "vnat-tag" = { expr = vNat.tag; expected = "VNat"; };
     "vzero-tag" = { expr = vZero.tag; expected = "VZero"; };
     "vsucc-tag" = { expr = (vSucc vZero).tag; expected = "VSucc"; };
     "vsucc-pred" = { expr = (vSucc vZero).pred.tag; expected = "VZero"; };
-    "vbool-tag" = { expr = vBool.tag; expected = "VBool"; };
-    "vtrue-tag" = { expr = vTrue.tag; expected = "VTrue"; };
-    "vfalse-tag" = { expr = vFalse.tag; expected = "VFalse"; };
     "vlist-tag" = { expr = (vList vNat).tag; expected = "VList"; };
     "vnil-tag" = { expr = (vNil vNat).tag; expected = "VNil"; };
     "vcons-tag" = { expr = (vCons vNat vZero (vNil vNat)).tag; expected = "VCons"; };
     "vunit-tag" = { expr = vUnit.tag; expected = "VUnit"; };
     "vtt-tag" = { expr = vTt.tag; expected = "VTt"; };
-    "vvoid-tag" = { expr = vVoid.tag; expected = "VVoid"; };
-    "vsum-tag" = { expr = (vSum vNat vBool).tag; expected = "VSum"; };
-    "vinl-tag" = { expr = (vInl vNat vBool vZero).tag; expected = "VInl"; };
-    "vinr-tag" = { expr = (vInr vNat vBool vTrue).tag; expected = "VInr"; };
+    "vsum-tag" = { expr = (vSum vNat vUnit).tag; expected = "VSum"; };
+    "vinl-tag" = { expr = (vInl vNat vUnit vZero).tag; expected = "VInl"; };
+    "vinr-tag" = { expr = (vInr vNat vUnit vTt).tag; expected = "VInr"; };
     "veq-tag" = { expr = (vEq vNat vZero vZero).tag; expected = "VEq"; };
     "vrefl-tag" = { expr = vRefl.tag; expected = "VRefl"; };
     "vu-tag" = { expr = (vU 0).tag; expected = "VU"; };
@@ -257,10 +239,8 @@ in mk {
     "efst-tag" = { expr = eFst.tag; expected = "EFst"; };
     "esnd-tag" = { expr = eSnd.tag; expected = "ESnd"; };
     "enat-elim-tag" = { expr = (eNatElim vNat vZero vZero).tag; expected = "ENatElim"; };
-    "ebool-elim-tag" = { expr = (eBoolElim vBool vZero vZero).tag; expected = "EBoolElim"; };
     "elist-elim-tag" = { expr = (eListElim vNat vNat vZero vZero).tag; expected = "EListElim"; };
-    "eabsurd-tag" = { expr = (eAbsurd vNat).tag; expected = "EAbsurd"; };
-    "esum-elim-tag" = { expr = (eSumElim vNat vBool vNat vZero vZero).tag; expected = "ESumElim"; };
+    "esum-elim-tag" = { expr = (eSumElim vNat vUnit vNat vZero vZero).tag; expected = "ESumElim"; };
     "ej-tag" = { expr = (eJ vNat vZero vNat vZero vZero).tag; expected = "EJ"; };
 
     # Descriptions (indexed)
@@ -269,26 +249,26 @@ in mk {
     "vdescret-tag" = { expr = (vDescRet vTt).tag; expected = "VDescRet"; };
     "vdescret-j" = { expr = (vDescRet vTt).j.tag; expected = "VTt"; };
     "vdescarg-tag" = {
-      expr = (vDescArg vBool (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).tag;
+      expr = (vDescArg vNat (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).tag;
       expected = "VDescArg";
     };
     "vdescrec-tag" = { expr = (vDescRec vTt (vDescRet vTt)).tag; expected = "VDescRec"; };
     "vdescrec-j" = { expr = (vDescRec vTt (vDescRet vTt)).j.tag; expected = "VTt"; };
     "vdescrec-D" = { expr = (vDescRec vTt (vDescRet vTt)).D.tag; expected = "VDescRet"; };
     "vdescpi-tag" = {
-      expr = (vDescPi vBool (vLam "_" vBool (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).tag;
+      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).tag;
       expected = "VDescPi";
     };
     "vdescpi-S" = {
-      expr = (vDescPi vBool (vLam "_" vBool (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).S.tag;
-      expected = "VBool";
+      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).S.tag;
+      expected = "VNat";
     };
     "vdescpi-f" = {
-      expr = (vDescPi vBool (vLam "_" vBool (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).f.tag;
+      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).f.tag;
       expected = "VLam";
     };
     "vdescpi-D" = {
-      expr = (vDescPi vBool (vLam "_" vBool (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).D.tag;
+      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).D.tag;
       expected = "VDescRet";
     };
     "vmu-tag" = { expr = (vMu vUnit (vDescRet vTt) vTt).tag; expected = "VMu"; };

@@ -19,12 +19,12 @@ let
   val = fx.tc.value;
   inherit (val) mkClosure
     vLam vPi vSigma vPair vNat vZero vSucc
-    vBool vTrue vFalse vList vNil vCons
-    vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
+    vList vNil vCons
+    vUnit vTt vSum vInl vInr vEq vRefl vU vNe
     vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
+    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq;
 in {
   scope = {
     defaultFuel = 10000000;
@@ -76,13 +76,6 @@ in {
         in result.acc
       else throw "tc: vNatElim on non-nat (tag=${scrut.tag})";
 
-    vBoolElim = motive: onTrue: onFalse: scrut:
-      if scrut.tag == "VTrue" then onTrue
-      else if scrut.tag == "VFalse" then onFalse
-      else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eBoolElim motive onTrue onFalse) ])
-      else throw "tc: vBoolElim on non-bool (tag=${scrut.tag})";
-
     # vStrEq — string equality primitive.
     # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
     # StrEq is symmetric, so we canonicalize neutral-first for the spine.
@@ -131,11 +124,6 @@ in {
           ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
         in result.acc
       else throw "tc: vListElim on non-list (tag=${scrut.tag})";
-
-    vAbsurd = type: scrut:
-      if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eAbsurd type) ])
-      else throw "tc: vAbsurd on non-neutral (tag=${scrut.tag})";
 
     vSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
       if scrut.tag == "VInl" then self.vAppF fuel onLeft scrut.val
@@ -191,12 +179,6 @@ in {
       else if t == "nat-elim" then
         self.vNatElimF f (ev tm.motive) (ev tm.base) (ev tm.step) (ev tm.scrut)
 
-      else if t == "bool" then vBool
-      else if t == "true" then vTrue
-      else if t == "false" then vFalse
-      else if t == "bool-elim" then
-        self.vBoolElim (ev tm.motive) (ev tm.onTrue) (ev tm.onFalse) (ev tm.scrut)
-
       else if t == "list" then vList (ev tm.elem)
       else if t == "nil" then vNil (ev tm.elem)
       # cons — trampolined for deep lists (5000+ elements).
@@ -227,9 +209,6 @@ in {
 
       else if t == "unit" then vUnit
       else if t == "tt" then vTt
-
-      else if t == "void" then vVoid
-      else if t == "absurd" then self.vAbsurd (ev tm.type) (ev tm.term)
 
       else if t == "sum" then vSum (ev tm.left) (ev tm.right)
       else if t == "inl" then vInl (ev tm.left) (ev tm.right) (ev tm.term)
@@ -405,8 +384,8 @@ in {
     idTm = T.mkLam "x" T.mkNat (T.mkVar 0);
     appIdZero = T.mkApp idTm T.mkZero;
   in {
-    "eval-var-0" = { expr = (eval [ vZero vTrue ] (T.mkVar 0)).tag; expected = "VZero"; };
-    "eval-var-1" = { expr = (eval [ vZero vTrue ] (T.mkVar 1)).tag; expected = "VTrue"; };
+    "eval-var-0" = { expr = (eval [ vZero vTt ] (T.mkVar 0)).tag; expected = "VZero"; };
+    "eval-var-1" = { expr = (eval [ vZero vTt ] (T.mkVar 1)).tag; expected = "VTt"; };
 
     "eval-let" = {
       expr = (eval [] (T.mkLet "x" T.mkNat T.mkZero (T.mkVar 0))).tag;
@@ -431,15 +410,15 @@ in {
       expected = "VNe";
     };
 
-    "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkNat T.mkBool)).tag; expected = "VSigma"; };
-    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTrue)).tag; expected = "VPair"; };
+    "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkNat T.mkUnit)).tag; expected = "VSigma"; };
+    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTt)).tag; expected = "VPair"; };
     "eval-fst" = {
-      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTrue))).tag;
+      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTt))).tag;
       expected = "VZero";
     };
     "eval-snd" = {
-      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTrue))).tag;
-      expected = "VTrue";
+      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTt))).tag;
+      expected = "VTt";
     };
     "eval-fst-stuck" = {
       expr = (eval [ (freshVar 0) ] (T.mkFst (T.mkVar 0))).tag;
@@ -475,20 +454,6 @@ in {
       expected = "VNe";
     };
 
-    "eval-bool" = { expr = (eval [] T.mkBool).tag; expected = "VBool"; };
-    "eval-true" = { expr = (eval [] T.mkTrue).tag; expected = "VTrue"; };
-    "eval-false" = { expr = (eval [] T.mkFalse).tag; expected = "VFalse"; };
-    "eval-bool-elim-true" = {
-      expr = (eval [] (T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
-        T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).tag;
-      expected = "VZero";
-    };
-    "eval-bool-elim-false" = {
-      expr = (eval [] (T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
-        T.mkZero (T.mkSucc T.mkZero) T.mkFalse)).tag;
-      expected = "VSucc";
-    };
-
     "eval-list" = { expr = (eval [] (T.mkList T.mkNat)).tag; expected = "VList"; };
     "eval-nil" = { expr = (eval [] (T.mkNil T.mkNat)).tag; expected = "VNil"; };
     "eval-cons" = { expr = (eval [] (T.mkCons T.mkNat T.mkZero (T.mkNil T.mkNat))).tag; expected = "VCons"; };
@@ -504,29 +469,23 @@ in {
     "eval-unit" = { expr = (eval [] T.mkUnit).tag; expected = "VUnit"; };
     "eval-tt" = { expr = (eval [] T.mkTt).tag; expected = "VTt"; };
 
-    "eval-void" = { expr = (eval [] T.mkVoid).tag; expected = "VVoid"; };
-    "eval-absurd-stuck" = {
-      expr = (eval [ (freshVar 0) ] (T.mkAbsurd T.mkNat (T.mkVar 0))).tag;
-      expected = "VNe";
-    };
-
-    "eval-sum" = { expr = (eval [] (T.mkSum T.mkNat T.mkBool)).tag; expected = "VSum"; };
-    "eval-inl" = { expr = (eval [] (T.mkInl T.mkNat T.mkBool T.mkZero)).tag; expected = "VInl"; };
-    "eval-inr" = { expr = (eval [] (T.mkInr T.mkNat T.mkBool T.mkTrue)).tag; expected = "VInr"; };
+    "eval-sum" = { expr = (eval [] (T.mkSum T.mkNat T.mkUnit)).tag; expected = "VSum"; };
+    "eval-inl" = { expr = (eval [] (T.mkInl T.mkNat T.mkUnit T.mkZero)).tag; expected = "VInl"; };
+    "eval-inr" = { expr = (eval [] (T.mkInr T.mkNat T.mkUnit T.mkTt)).tag; expected = "VInr"; };
     "eval-sum-elim-inl" = {
-      expr = (eval [] (T.mkSumElim T.mkNat T.mkBool
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+      expr = (eval [] (T.mkSumElim T.mkNat T.mkUnit
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
         (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "y" T.mkBool T.mkZero)
-        (T.mkInl T.mkNat T.mkBool (T.mkSucc T.mkZero)))).tag;
+        (T.mkLam "y" T.mkUnit T.mkZero)
+        (T.mkInl T.mkNat T.mkUnit (T.mkSucc T.mkZero)))).tag;
       expected = "VSucc";
     };
     "eval-sum-elim-inr" = {
-      expr = (eval [] (T.mkSumElim T.mkNat T.mkBool
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+      expr = (eval [] (T.mkSumElim T.mkNat T.mkUnit
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
         (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "y" T.mkBool T.mkZero)
-        (T.mkInr T.mkNat T.mkBool T.mkTrue))).tag;
+        (T.mkLam "y" T.mkUnit T.mkZero)
+        (T.mkInr T.mkNat T.mkUnit T.mkTt))).tag;
       expected = "VZero";
     };
 
@@ -572,8 +531,8 @@ in {
       expected = "VZero";
     };
     "instantiate-const" = {
-      expr = (instantiate (mkClosure [ vTrue ] (T.mkVar 1)) vZero).tag;
-      expected = "VTrue";
+      expr = (instantiate (mkClosure [ vTt ] (T.mkVar 1)) vZero).tag;
+      expected = "VTt";
     };
 
     "fuel-exhaustion" = {
@@ -642,8 +601,8 @@ in {
     "eval-desc" = { expr = (eval [] (T.mkDesc T.mkUnit)).tag; expected = "VDesc"; };
     "eval-desc-ret" = { expr = (eval [] (T.mkDescRet T.mkTt)).tag; expected = "VDescRet"; };
     "eval-desc-arg" = {
-      expr = (eval [] (T.mkDescArg T.mkBool
-        (T.mkLam "_" T.mkBool (T.mkDescRet T.mkTt)))).tag;
+      expr = (eval [] (T.mkDescArg T.mkNat
+        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).tag;
       expected = "VDescArg";
     };
     "eval-desc-rec" = {
@@ -651,18 +610,18 @@ in {
       expected = "VDescRec";
     };
     "eval-desc-pi" = {
-      expr = (eval [] (T.mkDescPi T.mkBool
-        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).tag;
+      expr = (eval [] (T.mkDescPi T.mkNat
+        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "VDescPi";
     };
     "eval-desc-pi-S" = {
-      expr = (eval [] (T.mkDescPi T.mkBool
-        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
-      expected = "VBool";
+      expr = (eval [] (T.mkDescPi T.mkNat
+        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
+      expected = "VNat";
     };
     "eval-desc-pi-D" = {
-      expr = (eval [] (T.mkDescPi T.mkBool
-        (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
+      expr = (eval [] (T.mkDescPi T.mkNat
+        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
       expected = "VDescRet";
     };
     "eval-mu" = {
@@ -709,15 +668,15 @@ in {
       expected = "VZero";
     };
     "eval-desc-ind-arg-con" = {
-      # D = arg Bool (λ_. ret tt), ind D P step tt (con tt (false, refl)) = 0
+      # D = arg Nat (λ_. ret tt), ind D P step tt (con tt (zero, refl)) = 0
       expr = let
-        D = T.mkDescArg T.mkBool
-          (T.mkLam "_" T.mkBool (T.mkDescRet T.mkTt));
+        D = T.mkDescArg T.mkNat
+          (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt));
         P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
         step = T.mkLam "i" T.mkUnit
           (T.mkLam "d" (T.mkU 0)
             (T.mkLam "ih" T.mkUnit T.mkZero));
-        scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkFalse T.mkRefl);
+        scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkZero T.mkRefl);
       in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
       expected = "VZero";
     };

@@ -15,14 +15,13 @@ let
     emptyCtx extend lookupType
     runCheck checkTm inferTm;
 
-  inherit (V) vNat vZero vSucc vBool vPi vSigma
-    vList vUnit vVoid vSum vEq vU mkClosure vTt
+  inherit (V) vNat vZero vSucc vPi vSigma
+    vList vUnit vSum vEq vU mkClosure vTt
     vString vInt vFloat vAttrs vPath vFunction vAny
     vDescRet vMu;
 
   ctx0 = emptyCtx;
   ctx1 = extend ctx0 "x" vNat;
-  ctxV = extend ctx0 "v" vVoid;
 in {
   scope = {};
   tests = {
@@ -46,19 +45,14 @@ in {
       expected = "succ";
     };
 
-    "check-true" = {
-      expr = (checkTm ctx0 T.mkTrue vBool).tag;
-      expected = "true";
-    };
-
     "check-refl" = {
       expr = (checkTm ctx0 T.mkRefl (vEq vNat vZero vZero)).tag;
       expected = "refl";
     };
 
     "check-pair" = {
-      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkTrue)
-        (vSigma "x" vNat (mkClosure [] T.mkBool))).tag;
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkTt)
+        (vSigma "x" vNat (mkClosure [] T.mkUnit))).tag;
       expected = "pair";
     };
 
@@ -79,12 +73,12 @@ in {
     };
 
     "check-inl" = {
-      expr = (checkTm ctx0 (T.mkInl T.mkNat T.mkBool T.mkZero) (vSum vNat vBool)).tag;
+      expr = (checkTm ctx0 (T.mkInl T.mkNat T.mkUnit T.mkZero) (vSum vNat vUnit)).tag;
       expected = "inl";
     };
 
     "check-inr" = {
-      expr = (checkTm ctx0 (T.mkInr T.mkNat T.mkBool T.mkTrue) (vSum vNat vBool)).tag;
+      expr = (checkTm ctx0 (T.mkInr T.mkNat T.mkUnit T.mkTt) (vSum vNat vUnit)).tag;
       expected = "inr";
     };
 
@@ -127,71 +121,50 @@ in {
 
     "infer-fst" = {
       expr = let
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue)
-          (T.mkSigma "x" T.mkNat T.mkBool);
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTt)
+          (T.mkSigma "x" T.mkNat T.mkUnit);
       in (inferTm ctx0 (T.mkFst p)).type.tag;
       expected = "VNat";
     };
 
     "infer-snd" = {
       expr = let
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue)
-          (T.mkSigma "x" T.mkNat T.mkBool);
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTt)
+          (T.mkSigma "x" T.mkNat T.mkUnit);
       in (inferTm ctx0 (T.mkSnd p)).type.tag;
-      expected = "VBool";
-    };
-
-    # Dependent Snd: Σ(b:Bool). if b then Nat else Bool.
-    "infer-snd-dependent" = {
-      expr = let
-        motive = T.mkLam "b" T.mkBool (T.mkU 0);
-        sndBody = T.mkBoolElim motive T.mkNat T.mkBool (T.mkVar 0);
-        sigTy = T.mkSigma "b" T.mkBool sndBody;
-        pair = T.mkAnn (T.mkPair T.mkTrue T.mkZero) sigTy;
-      in (inferTm ctx0 (T.mkSnd pair)).type.tag;
-      expected = "VNat";
+      expected = "VUnit";
     };
 
     "infer-pair-via-ann" = {
       expr = let
-        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+        sigTy = T.mkSigma "x" T.mkNat T.mkUnit;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTt) sigTy;
       in (inferTm ctx0 p).type.tag;
       expected = "VSigma";
     };
 
     "infer-fst-ann-pair" = {
       expr = let
-        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+        sigTy = T.mkSigma "x" T.mkNat T.mkUnit;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTt) sigTy;
       in (inferTm ctx0 (T.mkFst p)).type.tag;
       expected = "VNat";
     };
     "infer-snd-ann-pair" = {
       expr = let
-        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+        sigTy = T.mkSigma "x" T.mkNat T.mkUnit;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTt) sigTy;
       in (inferTm ctx0 (T.mkSnd p)).type.tag;
-      expected = "VBool";
-    };
-
-    "infer-pair-dependent" = {
-      expr = let
-        motive = T.mkLam "b" T.mkBool (T.mkU 0);
-        sndBody = T.mkBoolElim motive T.mkNat T.mkBool (T.mkVar 0);
-        sigTy = T.mkSigma "b" T.mkBool sndBody;
-        p = T.mkAnn (T.mkPair T.mkTrue T.mkZero) sigTy;
-      in (inferTm ctx0 (T.mkSnd p)).type.tag;
-      expected = "VNat";
+      expected = "VUnit";
     };
 
     # Bare pairs cannot be inferred (introduction forms check, not synthesize).
     "reject-pair-infer-bare" = {
-      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTrue)) ? error;
+      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTt)) ? error;
       expected = true;
     };
     "reject-pair-infer-bare-msg" = {
-      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTrue)).msg;
+      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTt)).msg;
       expected = "cannot infer type";
     };
 
@@ -209,28 +182,6 @@ in {
       expected = "lam";
     };
 
-    "infer-bool-elim" = {
-      expr = (inferTm ctx0 (T.mkBoolElim
-        (T.mkLam "b" T.mkBool T.mkNat)
-        T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).type.tag;
-      expected = "VNat";
-    };
-
-    # Non-lambda motive: exercises checkMotive infer path.
-    "infer-bool-elim-nonlam-motive" = {
-      expr = let
-        motive = T.mkAnn
-          (T.mkLam "b" T.mkBool T.mkNat)
-          (T.mkPi "b" T.mkBool (T.mkU 0));
-      in (inferTm ctx0 (T.mkBoolElim motive T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).type.tag;
-      expected = "VNat";
-    };
-
-    "infer-absurd" = {
-      expr = (inferTm ctxV (T.mkAbsurd T.mkNat (T.mkVar 0))).type.tag;
-      expected = "VNat";
-    };
-
     "infer-list-elim" = {
       expr = (inferTm ctx0 (T.mkListElim T.mkNat
         (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
@@ -242,11 +193,11 @@ in {
     };
 
     "infer-sum-elim" = {
-      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkUnit
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
         (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "b" T.mkBool T.mkZero)
-        (T.mkInl T.mkNat T.mkBool T.mkZero))).type.tag;
+        (T.mkLam "b" T.mkUnit T.mkZero)
+        (T.mkInl T.mkNat T.mkUnit T.mkZero))).type.tag;
       expected = "VNat";
     };
 
@@ -260,8 +211,8 @@ in {
       expected = "VNat";
     };
 
-    "reject-zero-bool" = {
-      expr = (checkTm ctx0 T.mkZero vBool) ? error;
+    "reject-zero-unit" = {
+      expr = (checkTm ctx0 T.mkZero vUnit) ? error;
       expected = true;
     };
 
@@ -293,8 +244,9 @@ in {
     };
 
     "reject-nat-elim-bad-motive" = {
+      # Motive body must be a type, not a term; T.mkTt : Unit fails the type check.
       expr = (inferTm ctx0 (T.mkNatElim
-        (T.mkLam "n" T.mkNat T.mkTrue)
+        (T.mkLam "n" T.mkNat T.mkTt)
         T.mkZero
         (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
         T.mkZero)) ? error;
@@ -303,12 +255,12 @@ in {
 
     "reject-pair-snd-mismatch" = {
       expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero)
-        (vSigma "x" vNat (mkClosure [] T.mkBool))) ? error;
+        (vSigma "x" vNat (mkClosure [] T.mkUnit))) ? error;
       expected = true;
     };
     "reject-pair-snd-mismatch-msg" = {
       expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero)
-        (vSigma "x" vNat (mkClosure [] T.mkBool))).msg;
+        (vSigma "x" vNat (mkClosure [] T.mkUnit))).msg;
       expected = "cannot infer type";
     };
 
@@ -317,8 +269,8 @@ in {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkAnn
           (T.mkLam "y" T.mkNat
-            (T.mkLam "e" T.mkBool (T.mkU 0)))
-          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkBool (T.mkU 1))))
+            (T.mkLam "e" T.mkNat (T.mkU 0)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU 1))))
         T.mkZero
         T.mkZero
         T.mkRefl)) ? error;
@@ -328,8 +280,8 @@ in {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkAnn
           (T.mkLam "y" T.mkNat
-            (T.mkLam "e" T.mkBool (T.mkU 0)))
-          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkBool (T.mkU 1))))
+            (T.mkLam "e" T.mkNat (T.mkU 0)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU 1))))
         T.mkZero
         T.mkZero
         T.mkRefl)).msg;
@@ -357,20 +309,12 @@ in {
       expected = true;
     };
 
-    "reject-nat-elim-bool-scrut" = {
+    "reject-nat-elim-unit-scrut" = {
       expr = (inferTm ctx0 (T.mkNatElim
         (T.mkLam "n" T.mkNat T.mkNat)
         T.mkZero
         (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
-        T.mkTrue)) ? error;
-      expected = true;
-    };
-
-    "reject-bool-elim-nat-scrut" = {
-      expr = (inferTm ctx0 (T.mkBoolElim
-        (T.mkLam "b" T.mkBool T.mkNat)
-        T.mkZero (T.mkSucc T.mkZero)
-        T.mkZero)) ? error;
+        T.mkTt)) ? error;
       expected = true;
     };
 
@@ -385,10 +329,10 @@ in {
     };
 
     "reject-sum-elim-nat-scrut" = {
-      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkUnit
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
         (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "b" T.mkBool T.mkZero)
+        (T.mkLam "b" T.mkUnit T.mkZero)
         T.mkZero)) ? error;
       expected = true;
     };
@@ -399,12 +343,12 @@ in {
     };
 
     "infer-sigma-type" = {
-      expr = (inferTm ctx0 (T.mkSigma "x" T.mkNat T.mkBool)).type.tag;
+      expr = (inferTm ctx0 (T.mkSigma "x" T.mkNat T.mkNat)).type.tag;
       expected = "VU";
     };
 
     "infer-sum-type" = {
-      expr = (inferTm ctx0 (T.mkSum T.mkNat T.mkBool)).type.tag;
+      expr = (inferTm ctx0 (T.mkSum T.mkNat T.mkNat)).type.tag;
       expected = "VU";
     };
 
@@ -414,12 +358,12 @@ in {
     };
 
     "checktype-pi" = {
-      expr = (runCheck (checkType ctx0 (T.mkPi "x" T.mkNat T.mkBool))).tag;
+      expr = (runCheck (checkType ctx0 (T.mkPi "x" T.mkNat T.mkNat))).tag;
       expected = "pi";
     };
 
     "checktype-sigma" = {
-      expr = (runCheck (checkType ctx0 (T.mkSigma "x" T.mkNat T.mkBool))).tag;
+      expr = (runCheck (checkType ctx0 (T.mkSigma "x" T.mkNat T.mkNat))).tag;
       expected = "sigma";
     };
 
@@ -452,7 +396,7 @@ in {
 
     "reject-j-motive-wrong-outer-domain" = {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
-        (T.mkLam "y" T.mkBool
+        (T.mkLam "y" T.mkUnit
           (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU 0)))
         T.mkZero T.mkZero T.mkRefl)) ? error;
       expected = true;
@@ -469,15 +413,6 @@ in {
         eqTy = T.mkEq T.mkNat addZeroTm T.mkZero;
       in (inferTm ctx0 (T.mkAnn T.mkRefl eqTy)).type.tag;
       expected = "VEq";
-    };
-
-    "theorem-bool-elim" = {
-      expr = let
-        tm = T.mkBoolElim
-          (T.mkLam "b" T.mkBool T.mkNat)
-          T.mkZero (T.mkSucc T.mkZero) T.mkTrue;
-      in (inferTm ctx0 (T.mkAnn tm T.mkNat)).type.tag;
-      expected = "VNat";
     };
 
     "theorem-nat-elim-infer" = {
@@ -546,13 +481,9 @@ in {
       expr = Q.nf [] (Q.nf [] (T.mkSucc T.mkZero)) == Q.nf [] (T.mkSucc T.mkZero);
       expected = true;
     };
-    "roundtrip-true" = {
-      expr = Q.nf [] (Q.nf [] T.mkTrue) == Q.nf [] T.mkTrue;
-      expected = true;
-    };
     "roundtrip-pair" = {
-      expr = Q.nf [] (Q.nf [] (T.mkPair T.mkZero T.mkTrue))
-        == Q.nf [] (T.mkPair T.mkZero T.mkTrue);
+      expr = Q.nf [] (Q.nf [] (T.mkPair T.mkZero T.mkTt))
+        == Q.nf [] (T.mkPair T.mkZero T.mkTt);
       expected = true;
     };
     "roundtrip-nil" = {
@@ -589,7 +520,7 @@ in {
       expected = true;
     };
     "roundtrip-sigma" = {
-      expr = let tm = T.mkSigma "x" T.mkNat T.mkBool;
+      expr = let tm = T.mkSigma "x" T.mkNat T.mkNat;
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
       expected = true;
     };
@@ -599,17 +530,17 @@ in {
       expected = true;
     };
     "roundtrip-sum" = {
-      expr = let tm = T.mkSum T.mkNat T.mkBool;
+      expr = let tm = T.mkSum T.mkNat T.mkUnit;
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
       expected = true;
     };
     "roundtrip-inl" = {
-      expr = let tm = T.mkInl T.mkNat T.mkBool T.mkZero;
+      expr = let tm = T.mkInl T.mkNat T.mkUnit T.mkZero;
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
       expected = true;
     };
     "roundtrip-inr" = {
-      expr = let tm = T.mkInr T.mkNat T.mkBool T.mkTrue;
+      expr = let tm = T.mkInr T.mkNat T.mkUnit T.mkTt;
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
       expected = true;
     };
@@ -626,13 +557,6 @@ in {
       expr = Q.nf [] (Q.nf [] (T.mkU 0)) == Q.nf [] (T.mkU 0);
       expected = true;
     };
-    "roundtrip-bool-elim" = {
-      expr = let tm = T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
-        T.mkZero (T.mkSucc T.mkZero) T.mkFalse;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
-      expected = true;
-    };
-
     # Large elim: motive returns higher universe.
     "large-elim-nat" = {
       expr = (inferTm ctx0 (T.mkNatElim
@@ -640,13 +564,6 @@ in {
         T.mkNat
         (T.mkLam "k" T.mkNat (T.mkLam "ih" (T.mkU 0) (T.mkVar 0)))
         T.mkZero)).type.tag;
-      expected = "VU";
-    };
-
-    "large-elim-bool" = {
-      expr = (inferTm ctx0 (T.mkBoolElim
-        (T.mkLam "b" T.mkBool (T.mkU 0))
-        T.mkNat T.mkBool T.mkTrue)).type.tag;
       expected = "VU";
     };
 
@@ -661,11 +578,11 @@ in {
     };
 
     "large-elim-sum" = {
-      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) (T.mkU 0))
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkUnit
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) (T.mkU 0))
         (T.mkLam "x" T.mkNat T.mkNat)
-        (T.mkLam "b" T.mkBool T.mkBool)
-        (T.mkInl T.mkNat T.mkBool T.mkZero))).type.tag;
+        (T.mkLam "b" T.mkUnit T.mkUnit)
+        (T.mkInl T.mkNat T.mkUnit T.mkZero))).type.tag;
       expected = "VU";
     };
 
@@ -676,13 +593,6 @@ in {
         T.mkNat
         T.mkZero
         T.mkRefl)).type.tag;
-      expected = "VU";
-    };
-
-    "large-elim-bool-U2" = {
-      expr = (inferTm ctx0 (T.mkBoolElim
-        (T.mkLam "b" T.mkBool (T.mkU 1))
-        (T.mkU 0) T.mkNat T.mkFalse)).type.tag;
       expected = "VU";
     };
 
@@ -878,8 +788,8 @@ in {
       expr = (checkTm ctx0 (T.mkFloatLit 1.0) vNat) ? error;
       expected = true;
     };
-    "reject-attrs-lit-as-bool" = {
-      expr = (checkTm ctx0 T.mkAttrsLit vBool) ? error;
+    "reject-attrs-lit-as-nat" = {
+      expr = (checkTm ctx0 T.mkAttrsLit vNat) ? error;
       expected = true;
     };
     "reject-string-lit-as-nat" = {
@@ -942,7 +852,7 @@ in {
 
     "infer-desc-arg" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescArg T.mkBool (T.mkDescRet T.mkTt))
+        (T.mkAnn (T.mkDescArg T.mkNat (T.mkDescRet T.mkTt))
                  (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
     };
@@ -955,10 +865,10 @@ in {
     };
 
     "infer-desc-pi" = {
-      # f : Bool → Unit; all synthesis positions fold through the ann's check mode.
+      # f : Nat → Unit; all synthesis positions fold through the ann's check mode.
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescPi T.mkBool
-                   (T.mkLam "_" T.mkBool T.mkTt)
+        (T.mkAnn (T.mkDescPi T.mkNat
+                   (T.mkLam "_" T.mkNat T.mkTt)
                    (T.mkDescRet T.mkTt))
                  (T.mkDesc T.mkUnit))).type.tag;
       expected = "VDesc";
@@ -1059,21 +969,21 @@ in {
     };
 
     "infer-desc-ind-arg" = {
-      # D = arg Bool (ret tt) — body is body-Tm under implicit s:Bool, not a lambda.
-      # interp at i = Σ(s:Bool). Eq Unit tt i (Var 1 = i from inside the Sigma snd).
+      # D = arg Nat (ret tt) — body is body-Tm under implicit s:Nat, not a lambda.
+      # interp at i = Σ(s:Nat). Eq Unit tt i (Var 1 = i from inside the Sigma snd).
       # All = Unit (allOnRet collapses to Unit at ret-leaf for I=⊤).
       expr = let
-        D = T.mkAnn (T.mkDescArg T.mkBool (T.mkDescRet T.mkTt))
+        D = T.mkAnn (T.mkDescArg T.mkNat (T.mkDescRet T.mkTt))
                     (T.mkDesc T.mkUnit);
       in (inferTm ctx0 (T.mkDescInd D
         (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))
         (T.mkLam "i" T.mkUnit
-          (T.mkLam "d" (T.mkSigma "s" T.mkBool
+          (T.mkLam "d" (T.mkSigma "s" T.mkNat
             (T.mkEq T.mkUnit T.mkTt (T.mkVar 1)))
             (T.mkLam "_" T.mkUnit T.mkZero)))
         T.mkTt
         (T.mkDescCon D T.mkTt
-          (T.mkPair T.mkFalse T.mkRefl)))).type.tag;
+          (T.mkPair T.mkZero T.mkRefl)))).type.tag;
       expected = "VNat";
     };
   };

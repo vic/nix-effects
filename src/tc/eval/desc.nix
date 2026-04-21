@@ -26,7 +26,7 @@ let
   term = fx.tc.term;
   val = fx.tc.value;
   inherit (val) mkClosure vLam vDesc vU vTt vPair vNe
-    vDescRet vDescArg vDescRec vDescPi vBool vUnit vRefl
+    vDescRet vDescArg vDescRec vDescPi vNat vUnit vRefl
     eDescInd eDescElim;
 
   # Closed Tms (no free vars) with `I` as the outermost lambda binder.
@@ -636,39 +636,39 @@ in {
       expected = "VNat";
     };
     "interp-pi-ret" = {
-      # ⟦pi Bool (λ_.tt) (ret tt)⟧(λ_. Nat)(tt) = Σ(_: Π(s:Bool). Nat). Eq Unit tt tt
+      # ⟦pi Nat (λ_.tt) (ret tt)⟧(λ_. Nat)(tt) = Σ(_: Π(s:Nat). Nat). Eq Unit tt tt
       expr = let
-        fLam = vLam "_" vBool (mkClosure [] term.mkTt);
+        fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vBool fLam Dret) X_nat vTt).tag;
+        (vDescPi vNat fLam Dret) X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-pi-ret-fst" = {
       expr = let
-        fLam = vLam "_" vBool (mkClosure [] term.mkTt);
+        fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vBool fLam Dret) X_nat vTt).fst.tag;
+        (vDescPi vNat fLam Dret) X_nat vTt).fst.tag;
       expected = "VPi";
     };
     "interp-pi-ret-fst-domain" = {
       expr = let
-        fLam = vLam "_" vBool (mkClosure [] term.mkTt);
+        fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vBool fLam Dret) X_nat vTt).fst.domain.tag;
-      expected = "VBool";
+        (vDescPi vNat fLam Dret) X_nat vTt).fst.domain.tag;
+      expected = "VNat";
     };
     "interp-arg-ret" = {
-      # ⟦arg Bool (λ_.ret tt)⟧(λ_. Nat)(tt) = Σ(s:Bool). Eq Unit tt tt
+      # ⟦arg Nat (λ_.ret tt)⟧(λ_. Nat)(tt) = Σ(s:Nat). Eq Unit tt tt
       expr = (self.interpF self.defaultFuel vUnit
-        (vDescArg vBool (mkClosure [] (term.mkDescRet term.mkTt)))
+        (vDescArg vNat (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-arg-ret-fst" = {
       expr = (self.interpF self.defaultFuel vUnit
-        (vDescArg vBool (mkClosure [] (term.mkDescRet term.mkTt)))
+        (vDescArg vNat (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).fst.tag;
-      expected = "VBool";
+      expected = "VNat";
     };
 
     "allTy-ret" = {

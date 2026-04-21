@@ -70,6 +70,21 @@ Everything runs at `nix eval` time.
 
 **[Documentation](https://docs.kleisli.io/nix-effects)**
 
+## Table of contents
+
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Dependent types](#dependent-types)
+- [Effects](#effects)
+- [Streams](#streams)
+- [API reference](#api-reference)
+- [How it works](#how-it-works)
+- [Known limitations](#known-limitations)
+- [Testing](#testing)
+- [Formal foundations](#formal-foundations)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
+
 ## Features
 
 ### Effects layer

@@ -4,36 +4,57 @@ This chapter describes the type-checking kernel: its pipeline, its
 primitives, and how to write verified implementations that the kernel
 checks and extracts back to usable Nix functions.
 
-## The "one system" architecture
+## Two kernels
 
-nix-effects has one notion of type and one checking mechanism. Every
-type is defined by its kernel representation. `.check` is derived
-mechanically from the kernel's `decide` procedure. There is no
-separate contract system, no adequacy bridge, and no possibility of
-disagreement between the check predicate and the kernel.
+nix-effects is a freer-monad effect layer with a dependent type
+checker on top. There are two kernels:
+
+- The **effects kernel** (`src/kernel.nix`, `src/comp.nix`,
+  `src/queue.nix`) implements the freer monad with FTCQueue. It
+  defines the `Computation` ADT (`Pure a | Impure (Effect x)
+  (FTCQueue x a)`) and the monadic operations `pure`, `impure`,
+  `send`, `bind`, `map`, `seq`, `pipe`, `kleisli`.
+- The **type-checking kernel** (`src/tc/`) implements Martin-Löf
+  type theory with normalization by evaluation and bidirectional
+  checking. Six modules: `term`, `eval`, `value`, `quote`, `conv`,
+  `check` (with `check/` split into `check`, `infer`, `type`).
+
+The type-checking kernel's higher layers use the effects kernel for
+error reporting. When `check` or `infer` rejects a term, it does not
+throw — it calls `send "typeError" { msg; expected; got; term; }`,
+producing an `Impure` computation. Handlers in
+`src/effects/typecheck.nix` (`strict`, `collecting`, and others)
+interpret that request with different strategies: `strict` throws on
+the first error, `collecting` accumulates errors into handler state.
+The TCB (`eval`, `quote`, `conv`) never sends effects — it only
+throws on kernel-invariant violations.
 
 ```
-Type system API
+Type system API (src/types/)
   Record, ListOf, DepRecord, refined, Pi, Sigma, ...
        |
-       | elaboration
+       | elaboration (src/tc/elaborate/, src/tc/hoas/)
        v
-Type-checking kernel (MLTT)
+Type-checking kernel (MLTT, src/tc/)
        |
-       | checker runs as effectful computation
+       | typeError sent as effect request
        v
-Effects kernel (freer monad, FTCQueue, trampoline, handlers)
+Effects kernel (freer monad + FTCQueue, src/kernel.nix)
        |
+       | handler (strict / collecting / ...) interprets effects
        v
 Pure Nix
 ```
 
-Types are kernel types. `Record`, `ListOf`, `DepRecord`, `refined` —
-all of them compile down to kernel constructions via elaboration.
-Checking a value against a type is a kernel judgment. Proving a
-universal property about a type is also a kernel judgment. Same
-kernel, same judgment form `Γ ⊢ t : T`, two modes of interaction:
-automated (decidable checking) and explicit (proof terms).
+Every `fx.types` type carries a `_kernel` field — a HOAS tree that
+elaborates to a kernel type. `.check` is derived from
+`decide(_kernel, v)`; `.validate` wraps `decide` in a `typeCheck`
+effect so handlers can do blame-annotated reporting; `.prove`
+type-checks HOAS proof terms; `verifyAndExtract` runs the full
+pipeline (check → eval → extract) to produce a Nix value from a HOAS
+implementation. Refinement types add a `guard` predicate that runs
+alongside the kernel check (`check = kernelDecide(v) ∧ guard(v)`),
+handling constraints the kernel cannot express.
 
 ## The kernel pipeline
 
@@ -107,10 +128,18 @@ these values.
 | `lambda` | `Function` | `FnLit` | 0 |
 | (any) | `Any` | `AnyLit` | 0 |
 
-The structural types — `Nat`, `Bool`, `Unit`, `Void`, `List`, `Sum`,
-`Sigma`, `Pi`, `Eq` — have full introduction and elimination rules.
-This means the kernel can compute with natural numbers, booleans,
-lists, pairs, and functions, but treats strings, integers, and other
+The structural types with kernel introduction and elimination rules
+are `Nat`, `Unit`, `List`, `Sum`, `Sigma`, `Pi`, and `Eq`, together
+with the indexed-description family (`Desc I`, `μ`, `desc-ind`).
+`Bool` and `Void` are derived, not primitive: `H.bool` elaborates to
+`μ ⊤ (plus (retI tt) (retI tt)) tt` (a plus-coproduct of two unit
+points), and `H.void` elaborates to `Fin 0`. Their eliminators —
+`H.boolElim`, `H.absurd` — are defined in `src/tc/hoas/combinators.nix`
+in terms of `desc-ind` and a direct `J`-transport respectively.
+
+This gives the kernel enough structure to compute with natural
+numbers, booleans, lists, pairs, functions, and user-defined
+inductive families, but treats strings, integers, and other
 Nix-native types as opaque tokens.
 
 Axiomatized primitives are critical for real-world use. Without them,
@@ -263,8 +292,11 @@ the result to a usable Nix value.
 
 ```nix
 # extract : HoasTree -> Val -> NixValue
-extract H.nat (VSucc (VSucc VZero))   # -> 2
-extract H.bool VTrue                   # -> true
+extract H.nat (VSucc (VSucc VZero))    # -> 2
+extract H.bool (VDescCon ... (VInl ... VRefl))   # -> true
+                                       #    (H.bool is derived,
+                                       #     so true/false are
+                                       #     plus-encoded μ values)
 extract H.string (VStringLit "hi")     # -> "hi"
 extract (H.listOf H.nat) (VCons ...)   # -> [1 2 3]
 extract (H.forall "x" ...) (VLam ...)  # -> Nix function (!)

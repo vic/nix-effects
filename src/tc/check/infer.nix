@@ -90,15 +90,6 @@ in {
                 let retTy = E.vApp pVal (E.eval ctx.env nTm); in
                 pure { term = T.mkNatElim pTm zTm sTm nTm; type = retTy; }))))
 
-      else if t == "bool-elim" then
-        bind (self.checkMotive ctx tm.motive (self.singleton V.vBool)) (pTm:
-          let pVal = E.eval ctx.env pTm; in
-          bind (self.check ctx tm.onTrue (E.vApp pVal V.vTrue)) (tTm:
-            bind (self.check ctx tm.onFalse (E.vApp pVal V.vFalse)) (fTm:
-              bind (self.check ctx tm.scrut V.vBool) (bTm:
-                let retTy = E.vApp pVal (E.eval ctx.env bTm); in
-                pure { term = T.mkBoolElim pTm tTm fTm bTm; type = retTy; }))))
-
       else if t == "list-elim" then
         bind (self.checkType ctx tm.elem) (aRaw:
           let aVal = E.eval ctx.env aRaw;
@@ -122,11 +113,6 @@ in {
                   let retTy = E.vApp pVal (E.eval ctx.env lTm); in
                   pure { term = T.mkListElim aRaw pTm nTm cTm lTm; type = retTy; })))))
 
-      else if t == "absurd" then
-        bind (self.checkType ctx tm.type) (aTm:
-          let aVal = E.eval ctx.env aTm; in
-          bind (self.check ctx tm.term V.vVoid) (tTm:
-            pure { term = T.mkAbsurd aTm tTm; type = aVal; }))
 
       else if t == "sum-elim" then
         bind (self.checkType ctx tm.left) (aRaw:
@@ -202,9 +188,7 @@ in {
 
       # Type formers infer at U(0)
       else if t == "nat" then pure { term = T.mkNat; type = V.vU 0; }
-      else if t == "bool" then pure { term = T.mkBool; type = V.vU 0; }
       else if t == "unit" then pure { term = T.mkUnit; type = V.vU 0; }
-      else if t == "void" then pure { term = T.mkVoid; type = V.vU 0; }
       else if t == "string" then pure { term = T.mkString; type = V.vU 0; }
       else if t == "int" then pure { term = T.mkInt; type = V.vU 0; }
       else if t == "float" then pure { term = T.mkFloat; type = V.vU 0; }

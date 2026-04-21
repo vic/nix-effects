@@ -122,9 +122,6 @@ in {
         in bind (self.check ctx base V.vNat) (base':
           pure (builtins.foldl' (acc: _: T.mkSucc acc) base' (builtins.genList (x: x) n)))
 
-      else if t == "true" && ty.tag == "VBool" then pure T.mkTrue
-      else if t == "false" && ty.tag == "VBool" then pure T.mkFalse
-
       else if t == "nil" && ty.tag == "VList" then
         pure (T.mkNil (Q.quote ctx.depth ty.elem))
 

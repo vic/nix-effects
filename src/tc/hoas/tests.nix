@@ -883,7 +883,7 @@ in {
       expr = let
         T' = fx.tc.term;
         Dstuck = V.vNe 0 [];
-        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkBool);
+        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
         qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
         descElim = qt.fn.fn;
       in descElim.onArg.body.domain.codomain.I.tag;
@@ -896,7 +896,7 @@ in {
       expr = let
         T' = fx.tc.term;
         Dstuck = V.vNe 0 [];
-        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkBool);
+        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
         qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
         descElim = qt.fn.fn;
       in descElim.onPi.body.domain.codomain.tag;

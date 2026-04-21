@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Type validation threads a structural `path` through the `typeCheck` effect, so the collecting handler now reports deep blame as a list of descent segments rather than a single opaque type name. `Record`, `ListOf`, `Variant`, and `Sigma` recurse via a new `validateAt path v` alongside the existing `validate v`; the 1-arg API is unchanged, and `ListOf` now delegates to `elemType.validateAt` so record elements decompose into per-field effects instead of blaming as a whole.
 
+The kernel retires `Bool`, `Void`, and `absurd` as primitives. The plus-coproduct and `Fin 0` from the indexed-description layer now carry them: `H.bool = μ ⊤ (plus (retI tt) (retI tt)) tt`, `H.void = Fin 0`, `H.boolElim` derived via `descInd` on `boolDesc`, and `H.absurd` routed through `absurdFin0` — a direct `J`-transport at motive `λx _. app (natCaseU P unitPrim) x`, eliminating the `natDisc → noConfSuccZero → absurdPrim` chain. Twelve kernel dispatch cases, six `Tm` constructors, four `Val` constructors, and two `Elim` frames disappear from the TCB. User-facing API (`H.bool`, `H.true_`, `H.false_`, `H.void`, `H.boolElim`, `H.absurd`, `v.if_`, `v.true_`, `v.false_`) is unchanged — they are the same combinators, now derived. `VUnit`/`VTt` remain as the irreducible bootstrap singleton.
+
 ### Added
 
 - **`fx.effects.hasHandler : String → Computation Bool`** — runtime query for whether a handler with the given name exists in the current scope. Dispatched by the trampoline via a scope-aware `localHandler` shim: returns `true` when the name is bound in the nearest enclosing `handle`/`scope.run`, rotates outward through unhandled scopes, and defaults to `false` at the root. **Reserves the effect name `"has-handler"`** — user handlers bound to that name are shadowed by the internal dispatch and should be renamed
@@ -16,6 +18,26 @@ Type validation threads a structural `path` through the `typeCheck` effect, so t
 - **Path-threaded `typeCheck` effect** — the effect param grows a `path : [String]` field. Collecting-handler state grows `{ path }`; logging-handler state grows `{ path }`. Strict handler's throw message renders `path` when non-empty, falls back to `context` otherwise
 - **`Type.validateAt path v`** — public method on every type for effectful validation with an explicit path prefix. `validate v` is the 1-arg convenience that delegates to `validateAt []`. Constructors (`Record`, `ListOf`, `Variant`, `Sigma`) thread path by appending one segment per recursion (field name, `"[i]"` for list elements, variant tag, `"fst"`/`"snd"` for `Sigma`)
 - **`verify` callback contract** — custom verifiers now take `self: path: v: Computation`. Previously `self: v: Computation`
+
+### Changed
+
+- **`absurdFin0` discharges `Fin 0` via direct `J`-transport.** At motive `λx _. app (natCaseU P unitPrim) x`, base `ttPrim` — `natCaseU P unitPrim` maps `zero → P` and `succ → Unit`, the `J`-base `tt : Unit = natCaseU P Unit (succ m)`, and the result `natCaseU P Unit zero = P`. No `Void` intermediate; the `natDisc → noConfSuccZero → absurdPrim` chain is gone
+- **StrEq's INFER rule returns the derived bool.** Return type is `μ ⊤ (plus (retI tt) (retI tt)) tt` instead of the retired `VBool`; `vStrEq` on two concrete string literals produces the plus-encoded `VDescCon boolDescV VTt (VInl/VInr eqTtV eqTtV VRefl)` instead of `VTrue`/`VFalse`
+- **`reifyType` VMu-plus recognizer.** The retired `VBool → H.bool` and `VVoid → H.void` cases are replaced by a VMu handler that checks the plus-coproduct-of-two-`retI tt` shape and maps to `H.bool`; `extractInner`'s `t == "bool"` branch is dropped (the mu branch handles the derived form)
+- **Elaborate's empty-variant case** routes to `self.void` (the derived `Fin 0`) instead of the deleted `T.mkVoid`
+
+### Removed
+
+- **Kernel `Tm` constructors** — `Bool`, `True`, `False`, `BoolElim(P,t,f,b)`, `Void`, `Absurd(A,t)`. No Tm builders (`mkBool`, `mkTrue`, `mkFalse`, `mkBoolElim`, `mkVoid`, `mkAbsurd`), no `inherit`s of them, no docs
+- **Kernel `Val` constructors** — `VBool`, `VTrue`, `VFalse`, `VVoid`. `Elim` frames `EBoolElim(P,t,f)`, `EAbsurd(A)` also gone. Their `eval` / `check` / `infer` / `conv` / `quote` / `elaborate` dispatch cases removed across `src/tc/`
+- **HOAS primitive aliases** — `boolPrim`, `truePrim_`, `falsePrim_`, `voidPrim`, `absurdPrim`, `boolElimPrim` in `src/tc/hoas/combinators.nix`. Along with dead helpers `natDisc` (43 lines), `noConfSuccZero` (9 lines), `symNat` (5 lines) — all unreachable after the `absurdFin0` rewrite
+
+### Documented
+
+- **`kernel-architecture.md` reframed** — replaced the vacuously-true "one system" prose with a factual "two kernels" description: effects kernel (`src/kernel.nix`, freer monad + FTCQueue) and type-checking kernel (`src/tc/`, MLTT), plus the route by which the TC kernel's higher layers send `typeError` effect requests that handlers in `src/effects/typecheck.nix` interpret with pluggable strategies. Structural-types list moves `Bool`/`Void` into a derived bullet pointing at `combinators.nix`
+- **`kernel-spec.md` synced with Bool/Void retirement** — §4.5 Booleans and §4.8 Void deleted; §4 renumbered (§4.5–§4.11); retired `Tm`/`Val`/`Elim` constructors and dispatch cases removed across §§2–9; §4.11 and §7.3 StrEq rules updated to return the derived `H.bool`; §11 positive/negative fixtures migrated from `Bool`/`True`/`False`/`Void`/`Absurd`/`BoolElim` to `Unit`/`Tt`/`Sum(Nat,Unit)` where the point wasn't testing bool/void behavior; §12 notation index rows `𝔹` and `⊥` annotated "(derived: …)"
+- **`proof-guide.md` updated** — §Booleans and §Boolean-and-cross-type-elimination describe `H.boolElim k motive trueCase falseCase scrutinee` as a derived combinator on the plus-coproduct `boolDesc`; §"What the kernel can and cannot prove" opening and the user-defined-recursive-types bullet distinguish primitive inductives (Nat, List, Sum, Unit, Eq, indexed descriptions) from derived (Bool, Void); quick-reference table rows updated accordingly
+- **`README.md` gains a table of contents** aligned to the existing section headings
 
 ### Fixed
 

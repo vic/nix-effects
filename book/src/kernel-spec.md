@@ -80,13 +80,6 @@ Tm ::=
   | NatElim(P : Tm, z : Tm, s : Tm, n : Tm)
     -- elim_ℕ(P, z, s, n)
 
-  -- Booleans
-  | Bool                                -- 𝔹
-  | True                                -- true
-  | False                               -- false
-  | BoolElim(P : Tm, t : Tm, f : Tm, b : Tm)
-    -- elim_𝔹(P, t, f, b)
-
   -- Lists
   | List(A : Tm)                        -- List A
   | Nil(A : Tm)                         -- nil_A
@@ -97,10 +90,6 @@ Tm ::=
   -- Unit
   | Unit                                -- ⊤
   | Tt                                  -- tt
-
-  -- Void
-  | Void                                -- ⊥
-  | Absurd(A : Tm, t : Tm)              -- absurd_A t
 
   -- Sum
   | Sum(A : Tm, B : Tm)                -- A + B
@@ -131,7 +120,7 @@ Tm ::=
   | Any                                 -- dynamic/any type
 
   -- String operations
-  | StrEq(lhs : Tm, rhs : Tm)          -- string equality: lhs == rhs → Bool
+  | StrEq(lhs : Tm, rhs : Tm)          -- string equality: lhs == rhs → H.bool (derived)
 
   -- Primitive literals
   | StringLit(s)                        -- string literal
@@ -185,11 +174,6 @@ Val ::=
   | VZero
   | VSucc(v : Val)
 
-  -- Booleans
-  | VBool
-  | VTrue
-  | VFalse
-
   -- Lists
   | VList(A : Val)
   | VNil(A : Val)
@@ -198,9 +182,6 @@ Val ::=
   -- Unit
   | VUnit
   | VTt
-
-  -- Void
-  | VVoid
 
   -- Sum
   | VSum(A : Val, B : Val)
@@ -229,9 +210,7 @@ Elim ::=
   | EFst
   | ESnd
   | ENatElim(P : Val, z : Val, s : Val)
-  | EBoolElim(P : Val, t : Val, f : Val)
   | EListElim(A : Val, P : Val, n : Val, c : Val)
-  | EAbsurd(A : Val)
   | ESumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
   | EJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
   | EStrEq(arg : Val)
@@ -349,27 +328,7 @@ vNatElim(_, _, _, _)         = THROW "kernel bug: vNatElim on non-nat"
 **Note**: `vNatElim` on `VSucc` recurses. The implementation MUST
 trampoline this to guarantee O(1) stack depth.
 
-### 4.5 Booleans
-
-```
-eval(ρ, Bool)             = VBool
-eval(ρ, True)             = VTrue
-eval(ρ, False)            = VFalse
-eval(ρ, BoolElim(P,t,f,b)) = vBoolElim(eval(ρ,P), eval(ρ,t), eval(ρ,f), eval(ρ,b))
-
-```
-
-where:
-
-```
-vBoolElim(P, t, f, VTrue)     = t
-vBoolElim(P, t, f, VFalse)    = f
-vBoolElim(P, t, f, VNe(l,sp)) = VNe(l, sp ++ [EBoolElim(P, t, f)])
-vBoolElim(_, _, _, _)         = THROW "kernel bug: vBoolElim on non-bool"
-
-```
-
-### 4.6 Lists
+### 4.5 Lists
 
 ```
 eval(ρ, List(A))            = VList(eval(ρ, A))
@@ -395,7 +354,7 @@ vListElim(_, _, _, _, _)               =
 
 **Note**: `vListElim` on `VCons` recurses. Must be trampolined.
 
-### 4.7 Unit
+### 4.6 Unit
 
 ```
 eval(ρ, Unit)  = VUnit
@@ -410,27 +369,7 @@ equal even though they would be in an extensional theory. If eta for
 Unit is needed, the elaborator must reduce to `Tt` before submitting
 to the kernel.
 
-### 4.8 Void
-
-```
-eval(ρ, Void)         = VVoid
-eval(ρ, Absurd(A, t)) = vAbsurd(eval(ρ, A), eval(ρ, t))
-
-```
-
-where:
-
-```
-vAbsurd(A, VNe(l, sp)) = VNe(l, sp ++ [EAbsurd(A)])
-vAbsurd(_, _)          = THROW "kernel bug: vAbsurd on non-neutral"
-
-```
-
-`Absurd` never computes — there is no closed value of type `Void`.
-If a non-neutral reaches `vAbsurd`, the term is ill-typed and the
-kernel has a bug (the checker should have caught it).
-
-### 4.9 Sum
+### 4.7 Sum
 
 ```
 eval(ρ, Sum(A, B))        = VSum(eval(ρ, A), eval(ρ, B))
@@ -453,7 +392,7 @@ vSumElim(_, _, _, _, _, _)              =
 
 ```
 
-### 4.10 Identity
+### 4.8 Identity
 
 ```
 eval(ρ, Eq(A, a, b))        = VEq(eval(ρ, A), eval(ρ, a), eval(ρ, b))
@@ -473,14 +412,14 @@ vJ(_, _, _, _, _, _)          = THROW "kernel bug: vJ on non-refl"
 
 ```
 
-### 4.11 Universes
+### 4.9 Universes
 
 ```
 eval(ρ, U(i)) = VU(i)
 
 ```
 
-### 4.12 Axiomatized primitives
+### 4.10 Axiomatized primitives
 
 Type formers evaluate to their corresponding values. Literals
 carry their payload through. No computation, no recursion — these
@@ -508,9 +447,9 @@ eval(ρ, AnyLit)       = VAnyLit
 Most primitives have no eliminators. They exist to integrate
 Nix's native types into the kernel's type system as opaque,
 axiomatized constants. The exception is String, which has
-`StrEq` (§4.13).
+`StrEq` (§4.11).
 
-### 4.13 String equality (StrEq)
+### 4.11 String equality (StrEq)
 
 ```
 eval(ρ, StrEq(lhs, rhs)) = vStrEq(eval(ρ, lhs), eval(ρ, rhs))
@@ -520,7 +459,12 @@ eval(ρ, StrEq(lhs, rhs)) = vStrEq(eval(ρ, lhs), eval(ρ, rhs))
 where:
 
 ```
-vStrEq(VStringLit(s₁), VStringLit(s₂)) = if s₁ == s₂ then VTrue else VFalse
+-- trueV / falseV are the plus-encoded derived booleans:
+--   trueV  = VDescCon boolDescV VTt (VInl eqTtV eqTtV VRefl)
+--   falseV = VDescCon boolDescV VTt (VInr eqTtV eqTtV VRefl)
+-- where boolDescV = plus-desc of two VDescRet VTt summands.
+
+vStrEq(VStringLit(s₁), VStringLit(s₂)) = if s₁ == s₂ then trueV else falseV
 vStrEq(VNe(l, sp),     rhs)            = VNe(l, sp ++ [EStrEq(rhs)])
 vStrEq(lhs,            VNe(l, sp))     = VNe(l, sp ++ [EStrEq(lhs)])
 vStrEq(_, _)                           = THROW "kernel bug: vStrEq on non-string"
@@ -528,14 +472,18 @@ vStrEq(_, _)                           = THROW "kernel bug: vStrEq on non-string
 ```
 
 `StrEq` is a binary predicate on strings. Both arguments must be of
-type `String`. The result type is `Bool`. Unlike other eliminators,
-StrEq has no motive — it always returns `Bool`, not a dependent type.
+type `String`. The result type is the derived `H.bool` —
+`μ ⊤ (plus (retI tt) (retI tt)) tt` — which is the kernel
+representation of booleans after their retirement as primitives.
+Unlike other eliminators, StrEq has no motive: it always returns
+`H.bool`, not a dependent type.
 
 When both arguments are concrete string literals, `vStrEq` reduces
-to `VTrue` or `VFalse` by Nix-level string comparison. When either
-argument is neutral, the neutral's spine is extended with `EStrEq`
-carrying the other argument. This is sound because `StrEq` is
-symmetric: `StrEq(a, b) ≡ StrEq(b, a)` for all `a, b : String`.
+to the plus-encoded `true_` or `false_` value by Nix-level string
+comparison. When either argument is neutral, the neutral's spine is
+extended with `EStrEq` carrying the other argument. This is sound
+because `StrEq` is symmetric: `StrEq(a, b) ≡ StrEq(b, a)` for all
+`a, b : String`.
 
 ---
 
@@ -552,15 +500,11 @@ quote(d, VPair(a, b))      = Pair(quote(d, a), quote(d, b), _)
 quote(d, VNat)             = Nat
 quote(d, VZero)            = Zero
 quote(d, VSucc(v))         = Succ(quote(d, v))   -- MUST trampoline for deep naturals
-quote(d, VBool)            = Bool
-quote(d, VTrue)            = True
-quote(d, VFalse)           = False
 quote(d, VList(A))         = List(quote(d, A))
 quote(d, VNil(A))          = Nil(quote(d, A))
 quote(d, VCons(A, h, t))   = Cons(quote(d, A), quote(d, h), quote(d, t))  -- MUST trampoline for deep lists
 quote(d, VUnit)            = Unit
 quote(d, VTt)              = Tt
-quote(d, VVoid)            = Void
 quote(d, VSum(A, B))       = Sum(quote(d, A), quote(d, B))
 quote(d, VInl(A, B, v))    = Inl(quote(d, A), quote(d, B), quote(d, v))
 quote(d, VInr(A, B, v))    = Inr(quote(d, A), quote(d, B), quote(d, v))
@@ -589,12 +533,8 @@ quoteSp(d, head, [EFst | rest])           = quoteSp(d, Fst(head), rest)
 quoteSp(d, head, [ESnd | rest])           = quoteSp(d, Snd(head), rest)
 quoteSp(d, head, [ENatElim(P,z,s) | rest]) =
   quoteSp(d, NatElim(quote(d,P), quote(d,z), quote(d,s), head), rest)
-quoteSp(d, head, [EBoolElim(P,t,f) | rest]) =
-  quoteSp(d, BoolElim(quote(d,P), quote(d,t), quote(d,f), head), rest)
 quoteSp(d, head, [EListElim(A,P,n,c) | rest]) =
   quoteSp(d, ListElim(quote(d,A), quote(d,P), quote(d,n), quote(d,c), head), rest)
-quoteSp(d, head, [EAbsurd(A) | rest]) =
-  quoteSp(d, Absurd(quote(d, A), head), rest)
 quoteSp(d, head, [ESumElim(A,B,P,l,r) | rest]) =
   quoteSp(d, SumElim(quote(d,A), quote(d,B), quote(d,P), quote(d,l), quote(d,r), head), rest)
 quoteSp(d, head, [EJ(A,a,P,pr,b) | rest]) =
@@ -619,12 +559,8 @@ conversion is purely structural on normalized values.
 ```
 conv(d, VU(i),    VU(j))    = (i == j)
 conv(d, VNat,     VNat)     = true
-conv(d, VBool,    VBool)    = true
 conv(d, VUnit,    VUnit)    = true
-conv(d, VVoid,    VVoid)    = true
 conv(d, VZero,    VZero)    = true
-conv(d, VTrue,    VTrue)    = true
-conv(d, VFalse,   VFalse)   = true
 conv(d, VTt,      VTt)      = true
 conv(d, VRefl,    VRefl)    = true
 conv(d, VSucc(a), VSucc(b)) = conv(d, a, b)
@@ -705,11 +641,8 @@ convElim(d, EFst,        EFst)        = true
 convElim(d, ESnd,        ESnd)        = true
 convElim(d, ENatElim(P₁,z₁,s₁), ENatElim(P₂,z₂,s₂)) =
   conv(d, P₁, P₂) ∧ conv(d, z₁, z₂) ∧ conv(d, s₁, s₂)
-convElim(d, EBoolElim(P₁,t₁,f₁), EBoolElim(P₂,t₂,f₂)) =
-  conv(d, P₁, P₂) ∧ conv(d, t₁, t₂) ∧ conv(d, f₁, f₂)
 convElim(d, EListElim(A₁,P₁,n₁,c₁), EListElim(A₂,P₂,n₂,c₂)) =
   conv(d, A₁, A₂) ∧ conv(d, P₁, P₂) ∧ conv(d, n₁, n₂) ∧ conv(d, c₁, c₂)
-convElim(d, EAbsurd(A₁), EAbsurd(A₂)) = conv(d, A₁, A₂)
 convElim(d, ESumElim(A₁,B₁,P₁,l₁,r₁), ESumElim(A₂,B₂,P₂,l₂,r₂)) =
   conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, P₁, P₂) ∧ conv(d, l₁, l₂) ∧ conv(d, r₁, r₂)
 convElim(d, EJ(A₁,a₁,P₁,pr₁,b₁), EJ(A₂,a₂,P₂,pr₂,b₂)) =
@@ -875,20 +808,6 @@ s : Π(k : ℕ). P(k) → P(S(k))
 ```
 This is checked by constructing the appropriate Pi type from `P̂`.
 
-**BoolElim**
-
-```
-                Γ ⊢ P ⇐ VPi(_, VBool, ([], U(k)))  ↝  P'
-                P̂ = eval(Γ.env, P')
-                Γ ⊢ t ⇐ vApp(P̂, VTrue)  ↝  t'
-                Γ ⊢ f ⇐ vApp(P̂, VFalse)  ↝  f'
-                Γ ⊢ b ⇐ VBool  ↝  b'
-                ──────────────────────
-                Γ ⊢ BoolElim(P, t, f, b) ⇒ vApp(P̂, eval(Γ.env, b'))
-                   ↝  BoolElim(P', t', f', b')
-
-```
-
 **ListElim**
 
 ```
@@ -902,17 +821,6 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 ──────────────────────
                 Γ ⊢ ListElim(A, P, n, c, l) ⇒ vApp(P̂, eval(Γ.env, l'))
                    ↝  ListElim(A', P', n', c', l')
-
-```
-
-**Absurd** (ex falso)
-
-```
-                Γ ⊢ A type  ↝  A'
-                Â = eval(Γ.env, A')
-                Γ ⊢ t ⇐ VVoid  ↝  t'
-                ──────────────────────
-                Γ ⊢ Absurd(A, t) ⇒ Â  ↝  Absurd(A', t')
 
 ```
 
@@ -998,16 +906,18 @@ FnLit → VFunction, AnyLit → VAny.)
 **StrEq** (string equality)
 
 ```
+                boolV = VMu VUnit (VDescPlus (VDescRet VTt) (VDescRet VTt)) VTt
                 Γ ⊢ lhs ⇐ VString  ↝  lhs'
                 Γ ⊢ rhs ⇐ VString  ↝  rhs'
                 ──────────────────────
-                Γ ⊢ StrEq(lhs, rhs) ⇒ VBool  ↝  StrEq(lhs', rhs')
+                Γ ⊢ StrEq(lhs, rhs) ⇒ boolV  ↝  StrEq(lhs', rhs')
 
 ```
 
 Both arguments are checked against `VString`. The result type is
-always `VBool`. StrEq is not a dependent eliminator — it has no
-motive parameter.
+the derived `H.bool` — `μ ⊤ (plus (retI tt) (retI tt)) tt` —
+written `boolV` above. StrEq is not a dependent eliminator: it has
+no motive parameter.
 
 ### 7.4 Checking rules (check)
 
@@ -1051,19 +961,6 @@ motive parameter.
                 Γ ⊢ t ⇐ VNat  ↝  t'
                 ──────────────────────
                 Γ ⊢ Succ(t) ⇐ A  ↝  Succ(t')
-
-```
-
-**True / False**
-
-```
-                whnf(A) = VBool
-                ──────────────────────
-                Γ ⊢ True ⇐ A  ↝  True
-
-                whnf(A) = VBool
-                ──────────────────────
-                Γ ⊢ False ⇐ A  ↝  False
 
 ```
 
@@ -1202,13 +1099,7 @@ levels are computed structurally during the type formation check
                 Γ ⊢ Nat type  ↝  Nat
 
                 ──────────────────────
-                Γ ⊢ Bool type  ↝  Bool
-
-                ──────────────────────
                 Γ ⊢ Unit type  ↝  Unit
-
-                ──────────────────────
-                Γ ⊢ Void type  ↝  Void
 
                 ──────────────────────
                 Γ ⊢ String type  ↝  String
@@ -1275,9 +1166,7 @@ for `checkTypeLevel(Γ, A).level`.
 
 ```
 checkTypeLevel(Γ, Nat)         = { Nat,     0 }
-checkTypeLevel(Γ, Bool)        = { Bool,    0 }
 checkTypeLevel(Γ, Unit)        = { Unit,    0 }
-checkTypeLevel(Γ, Void)        = { Void,    0 }
 checkTypeLevel(Γ, String)      = { String,  0 }
 checkTypeLevel(Γ, Int)         = { Int,     0 }
 checkTypeLevel(Γ, Float)       = { Float,   0 }
@@ -1381,9 +1270,9 @@ All fuel consumption flows through `evalF`:
 - Iota-reduction in recursive eliminators (`vNatElimF`,
   `vListElimF`, `vSumElimF`) consumes fuel indirectly via `vAppF`
 
-Non-recursive eliminators (`vBoolElim`, `vJ`, `vAbsurd`) complete
-in O(1) and do not call `evalF`. Structural operations (building
-values, pattern matching on tags) do not consume fuel.
+Non-recursive eliminators (`vJ`) complete in O(1) and do not call
+`evalF`. Structural operations (building values, pattern matching
+on tags) do not consume fuel.
 
 ### 9.4 Fuel threading in trampolined eliminators
 
@@ -1536,22 +1425,16 @@ f : Pi(x, Nat, Nat) ⊢ App(f, Zero) : Nat
 ⊢ Lam(A, U(0), Lam(x, Var(0), Var(0))) : Pi(A, U(0), Pi(x, A, A))
 
 -- Sigma pair
-⊢ Pair(Zero, True, Sigma(x, Nat, Bool)) : Sigma(x, Nat, Bool)
+⊢ Pair(Zero, Tt, Sigma(x, Nat, Unit)) : Sigma(x, Nat, Unit)
 
 -- Nat induction: 0 + 0 = 0
 ⊢ Refl : Eq(Nat, NatElim(_, Zero, _, Zero), Zero)
 
--- Bool elimination
-⊢ BoolElim(_, Zero, Succ(Zero), True) : Nat
-
 -- List
 ⊢ Cons(Nat, Zero, Nil(Nat)) : List(Nat)
 
--- Ex falso (with neutral)
-v : Void ⊢ Absurd(Nat, v) : Nat
-
 -- Sum injection
-⊢ Inl(Nat, Bool, Zero) : Sum(Nat, Bool)
+⊢ Inl(Nat, Unit, Zero) : Sum(Nat, Unit)
 
 -- Universe hierarchy
 ⊢ U(0) : U(1)
@@ -1564,14 +1447,15 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 
 -- Cumulativity: Nat : U(0) should also be accepted at U(1)
 
--- StrEq: equal strings reduce to true
-⊢ Refl : Eq(Bool, StrEq(StringLit("foo"), StringLit("foo")), True)
+-- StrEq: type inference returns the derived H.bool
+--   (= μ ⊤ (plus (retI tt) (retI tt)) tt; see §4.11)
+⊢ StrEq(StringLit("a"), StringLit("b")) : H.bool
 
--- StrEq: unequal strings reduce to false
-⊢ Refl : Eq(Bool, StrEq(StringLit("foo"), StringLit("bar")), False)
-
--- StrEq: type inference
-⊢ StrEq(StringLit("a"), StringLit("b")) : Bool
+-- StrEq reduction: equal strings reduce to the derived true_ value;
+-- unequal strings reduce to false_. Both witnessed via Refl over the
+-- derived-bool form. Expressing this rule at the Tm level requires
+-- the plus/μ machinery; see the examples/verified-functions.nix
+-- fixture `recordStrEqMatch` for an executable test.
 
 ```
 
@@ -1579,7 +1463,7 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 
 ```
 -- Type mismatch
-⊢ Zero : Bool                          REJECT
+⊢ Zero : Unit                          REJECT
 
 -- Universe violation
 ⊢ U(0) : U(0)                          REJECT
@@ -1594,7 +1478,7 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 ⊢ Fst(Zero)                            REJECT
 
 -- Wrong eliminator scrutinee
-⊢ NatElim(_, _, _, True)               REJECT
+⊢ NatElim(_, _, _, Tt)                 REJECT  (Tt : Unit, not Nat)
 
 -- Unbound variable
 ⊢ Var(0)  (in empty context)           REJECT
@@ -1603,7 +1487,7 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 ⊢ StrEq(Zero, StringLit("foo"))       REJECT  (lhs is Nat, expected String)
 
 -- Ill-typed pair
-⊢ Pair(Zero, Zero, Sigma(x, Nat, Bool))  REJECT  (snd is Nat, expected Bool)
+⊢ Pair(Zero, Zero, Sigma(x, Nat, Unit))  REJECT  (snd is Nat, expected Unit)
 
 ```
 
@@ -1651,9 +1535,9 @@ where `normal_form(t)` is the expected normal form.
 | Π | Dependent function type |
 | Σ | Dependent pair type |
 | ℕ | Natural numbers |
-| 𝔹 | Booleans |
+| 𝔹 | Booleans (derived: `μ ⊤ (plus (retI tt) (retI tt)) tt`) |
 | ⊤ | Unit type |
-| ⊥ | Void / empty type |
+| ⊥ | Void / empty type (derived: `Fin 0`) |
 | U(i) | Universe at level i |
 | Id_A(a,b) | Identity type |
 | TCB | Trusted computing base |

@@ -310,9 +310,7 @@ let
     # `nat` is the description-based fixpoint `mu natDesc`. natDescTm is
     # pre-elaborated at module scope to avoid re-elaborating on every use.
     if t == "nat" then T.mkMu T.mkUnit self.natDescTm T.mkTt
-    else if t == "bool" then T.mkBool
     else if t == "unit" then T.mkUnit
-    else if t == "void" then T.mkVoid
     else if t == "string" then T.mkString
     else if t == "int" then T.mkInt
     else if t == "float" then T.mkFloat
@@ -367,7 +365,7 @@ let
       let
         branches = h.branches;
         n = builtins.length branches;
-      in if n == 0 then T.mkVoid
+      in if n == 0 then elaborate depth self.void
          else if n == 1 then elaborate depth (builtins.head branches).type
          else
            # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn)).
@@ -446,8 +444,6 @@ let
           (encodeTagTm tags.lTms tags.rTms 1 2
              (T.mkPair acc T.mkRefl))
       ) (elaborate depth base) (builtins.genList (x: x) n)
-    else if t == "true" then T.mkTrue
-    else if t == "false" then T.mkFalse
     else if t == "tt" then T.mkTt
     else if t == "refl" then T.mkRefl
     else if t == "string-lit" then T.mkStringLit h.value
@@ -530,8 +526,6 @@ let
       T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
     else if t == "str-eq" then
       T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
-    else if t == "absurd" then
-      T.mkAbsurd (elaborate depth h.type) (elaborate depth h.term)
     else if t == "ann" then
       T.mkAnn (elaborate depth h.term) (elaborate depth h.type)
     # Macro constructor fallback: elaborate as the annotated lam cascade.
@@ -574,21 +568,18 @@ let
         (elaborate depth h.onPi) (elaborate depth h.onPlus) (elaborate depth h.scrut)
 
     # -- Eliminators --
-    # `boolElim` is a user-facing HOAS eliminator with its own tag:
-    # kernel `bool-elim` is used internally by descriptions and adapters
-    # and so stays reachable via this path. Nat/List/Sum eliminators route
-    # through the macro-generated `NatDT.elim` / `ListDT.elim` / `SumDT.elim`
-    # (see hoas/datatype.nix's dispatchStep), which produce `descInd`
-    # spines directly; no dedicated `nat-elim` / `list-elim` / `sum-elim`
-    # HOAS tag is emitted. The kernel `nat-elim` primitive type-checks
-    # its scrutinee against `V.vNat`, which HOAS `nat = NatDT.T = μ NatDT.D tt`
-    # never produces — a bridging HOAS tag would be structurally unusable.
-    # User-level motive-universe escape hatches (e.g. `natDisc`'s `Nat → U(0)`
+    # Nat/List/Sum eliminators route through the macro-generated
+    # `NatDT.elim` / `ListDT.elim` / `SumDT.elim` (see hoas/datatype.nix's
+    # dispatchStep), which produce `descInd` spines directly; no dedicated
+    # `nat-elim` / `list-elim` / `sum-elim` HOAS tag is emitted. The
+    # kernel `nat-elim` primitive type-checks its scrutinee against
+    # `V.vNat`, which HOAS `nat = NatDT.T = μ NatDT.D tt` never produces —
+    # a bridging HOAS tag would be structurally unusable. User-level
+    # motive-universe escape hatches (e.g. `natCaseU`'s `Nat → U(0)`
     # requiring motive at universe 1) go via `descInd` directly on the
-    # macro's `D` (see combinators.nix:natDisc).
-    else if t == "bool-elim" then
-      T.mkBoolElim (elaborate depth h.motive) (elaborate depth h.onTrue)
-        (elaborate depth h.onFalse) (elaborate depth h.scrut)
+    # macro's `D` (see combinators.nix:natCaseU). The Bool eliminator is
+    # derived as `descInd boolDesc` with a `sumElimPrim`-dispatching step
+    # (combinators.nix:boolElim) — no dedicated HOAS tag.
     else if t == "j" then
       T.mkJ (elaborate depth h.type) (elaborate depth h.lhs)
         (elaborate depth h.motive) (elaborate depth h.base)

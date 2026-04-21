@@ -36,13 +36,6 @@ let
   mkNatElim = motive: base: step: scrut:
     { tag = "nat-elim"; inherit motive base step scrut; };
 
-  # -- Booleans --
-  mkBool = { tag = "bool"; };
-  mkTrue = { tag = "true"; };
-  mkFalse = { tag = "false"; };
-  mkBoolElim = motive: onTrue: onFalse: scrut:
-    { tag = "bool-elim"; inherit motive onTrue onFalse scrut; };
-
   # -- Lists --
   mkList = elem: { tag = "list"; inherit elem; };
   mkNil = elem: { tag = "nil"; inherit elem; };
@@ -53,10 +46,6 @@ let
   # -- Unit --
   mkUnit = { tag = "unit"; };
   mkTt = { tag = "tt"; };
-
-  # -- Void --
-  mkVoid = { tag = "void"; };
-  mkAbsurd = type: term: { tag = "absurd"; inherit type term; };
 
   # -- Sum --
   mkSum = left: right: { tag = "sum"; inherit left right; };
@@ -152,10 +141,8 @@ in mk {
 
     ### Inductive Types
     - `mkNat`, `mkZero`, `mkSucc`, `mkNatElim` — natural numbers with eliminator
-    - `mkBool`, `mkTrue`, `mkFalse`, `mkBoolElim` — booleans with eliminator
     - `mkList`, `mkNil`, `mkCons`, `mkListElim` — lists with eliminator
     - `mkUnit`, `mkTt` — unit type and value
-    - `mkVoid`, `mkAbsurd` — empty type and ex falso
     - `mkSum`, `mkInl`, `mkInr`, `mkSumElim` — disjoint sum with eliminator
     - `mkEq`, `mkRefl`, `mkJ` — identity type with J eliminator
 
@@ -171,10 +158,8 @@ in mk {
     inherit mkPi mkLam mkApp;
     inherit mkSigma mkPair mkFst mkSnd;
     inherit mkNat mkZero mkSucc mkNatElim;
-    inherit mkBool mkTrue mkFalse mkBoolElim;
     inherit mkList mkNil mkCons mkListElim;
     inherit mkUnit mkTt;
-    inherit mkVoid mkAbsurd;
     inherit mkSum mkInl mkInr mkSumElim;
     inherit mkEq mkRefl mkJ;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
@@ -190,8 +175,8 @@ in mk {
     "pi-tag" = { expr = (mkPi "x" mkNat mkNat).tag; expected = "pi"; };
     "lam-tag" = { expr = (mkLam "x" mkNat (mkVar 0)).tag; expected = "lam"; };
     "app-tag" = { expr = (mkApp (mkVar 0) mkZero).tag; expected = "app"; };
-    "sigma-tag" = { expr = (mkSigma "x" mkNat mkBool).tag; expected = "sigma"; };
-    "pair-tag" = { expr = (mkPair mkZero mkTrue).tag; expected = "pair"; };
+    "sigma-tag" = { expr = (mkSigma "x" mkNat mkNat).tag; expected = "sigma"; };
+    "pair-tag" = { expr = (mkPair mkZero mkTt).tag; expected = "pair"; };
     "fst-tag" = { expr = (mkFst (mkVar 0)).tag; expected = "fst"; };
     "snd-tag" = { expr = (mkSnd (mkVar 0)).tag; expected = "snd"; };
     "nat-tag" = { expr = mkNat.tag; expected = "nat"; };
@@ -202,19 +187,14 @@ in mk {
       expr = (mkNatElim (mkVar 0) mkZero (mkVar 1) mkZero).tag;
       expected = "nat-elim";
     };
-    "bool-tag" = { expr = mkBool.tag; expected = "bool"; };
-    "true-tag" = { expr = mkTrue.tag; expected = "true"; };
-    "false-tag" = { expr = mkFalse.tag; expected = "false"; };
     "list-tag" = { expr = (mkList mkNat).tag; expected = "list"; };
     "nil-tag" = { expr = (mkNil mkNat).tag; expected = "nil"; };
     "cons-tag" = { expr = (mkCons mkNat mkZero (mkNil mkNat)).tag; expected = "cons"; };
     "unit-tag" = { expr = mkUnit.tag; expected = "unit"; };
     "tt-tag" = { expr = mkTt.tag; expected = "tt"; };
-    "void-tag" = { expr = mkVoid.tag; expected = "void"; };
-    "absurd-tag" = { expr = (mkAbsurd mkNat (mkVar 0)).tag; expected = "absurd"; };
-    "sum-tag" = { expr = (mkSum mkNat mkBool).tag; expected = "sum"; };
-    "inl-tag" = { expr = (mkInl mkNat mkBool mkZero).tag; expected = "inl"; };
-    "inr-tag" = { expr = (mkInr mkNat mkBool mkTrue).tag; expected = "inr"; };
+    "sum-tag" = { expr = (mkSum mkNat mkUnit).tag; expected = "sum"; };
+    "inl-tag" = { expr = (mkInl mkNat mkUnit mkZero).tag; expected = "inl"; };
+    "inr-tag" = { expr = (mkInr mkNat mkUnit mkTt).tag; expected = "inr"; };
     "eq-tag" = { expr = (mkEq mkNat mkZero mkZero).tag; expected = "eq"; };
     "refl-tag" = { expr = mkRefl.tag; expected = "refl"; };
     "j-tag" = {
@@ -251,25 +231,25 @@ in mk {
     "desc-I" = { expr = (mkDesc mkUnit).I.tag; expected = "unit"; };
     "desc-ret-tag" = { expr = (mkDescRet mkTt).tag; expected = "desc-ret"; };
     "desc-ret-j" = { expr = (mkDescRet mkTt).j.tag; expected = "tt"; };
-    "desc-arg-tag" = { expr = (mkDescArg mkBool (mkDescRet mkTt)).tag; expected = "desc-arg"; };
-    "desc-arg-S" = { expr = (mkDescArg mkBool (mkDescRet mkTt)).S.tag; expected = "bool"; };
+    "desc-arg-tag" = { expr = (mkDescArg mkNat (mkDescRet mkTt)).tag; expected = "desc-arg"; };
+    "desc-arg-S" = { expr = (mkDescArg mkNat (mkDescRet mkTt)).S.tag; expected = "nat"; };
     "desc-rec-tag" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).tag; expected = "desc-rec"; };
     "desc-rec-j" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).j.tag; expected = "tt"; };
     "desc-rec-D" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).D.tag; expected = "desc-ret"; };
     "desc-pi-tag" = {
-      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).tag;
+      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).tag;
       expected = "desc-pi";
     };
     "desc-pi-S" = {
-      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).S.tag;
-      expected = "bool";
+      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).S.tag;
+      expected = "nat";
     };
     "desc-pi-f" = {
-      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).f.tag;
+      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).f.tag;
       expected = "lam";
     };
     "desc-pi-D" = {
-      expr = (mkDescPi mkBool (mkLam "_" mkBool mkTt) (mkDescRet mkTt)).D.tag;
+      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).D.tag;
       expected = "desc-ret";
     };
     "mu-tag" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).tag; expected = "mu"; };

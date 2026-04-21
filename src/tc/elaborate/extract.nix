@@ -56,10 +56,8 @@ in {
         rawSum = left: right: { _htag = "sum"; inherit left right; };
       in
       if t == "VNat" then rawNat
-      else if t == "VBool" then H.bool
       else if t == "VString" then H.string
       else if t == "VUnit" then H.unit
-      else if t == "VVoid" then H.void
       else if t == "VInt" then H.int_
       else if t == "VFloat" then H.float_
       else if t == "VAttrs" then H.attrs
@@ -96,8 +94,11 @@ in {
           if D.tag != "VDescPlus" then fallback
           else
             let A = D.A; B = D.B; in
-            if A.tag == "VDescRet" && B.tag == "VDescRec"
-               && B.D.tag == "VDescRet"
+            if A.tag == "VDescRet" && A.j.tag == "VTt"
+               && B.tag == "VDescRet" && B.j.tag == "VTt"
+            then H.bool
+            else if A.tag == "VDescRet" && B.tag == "VDescRec"
+                 && B.D.tag == "VDescRet"
             then rawNat
             else if A.tag == "VDescRet" && B.tag == "VDescArg"
                  && (let body = E.instantiate B.T V.vTt; in
@@ -148,11 +149,6 @@ in {
           if isDescZero last.val
           then builtins.length chain - 1
           else throw "extract: Nat value is not a numeral (stuck at ${last.val.tag})"
-
-      else if t == "bool" then
-        if val.tag == "VTrue" then true
-        else if val.tag == "VFalse" then false
-        else throw "extract: Bool value is not true/false (got ${val.tag})"
 
       else if t == "unit" then
         if val.tag == "VTt" then null

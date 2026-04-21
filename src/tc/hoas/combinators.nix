@@ -19,10 +19,10 @@ in {
     isMarker = x: builtins.isAttrs x && x ? _hoas && x._hoas == _hoasTag;
 
     # Kernel-primitive value types tying the type theory to the
-    # underlying Nix value layer. `bool` / `unit` / `void` are
-    # defined further down as derived μ-forms; the kernel-primitive
-    # nodes for those types live under the internal `*Prim` aliases
-    # (`boolPrim` / `unitPrim` / `voidPrim`).
+    # underlying Nix value layer. `bool` / `void` are defined further
+    # down as derived μ-forms (via plus-coproduct and Fin 0); `unit`
+    # remains a kernel primitive whose alias `unitPrim` pins the
+    # ⊤-slice I parameter throughout the description machinery.
     string = { _htag = "string"; };
     int_ = { _htag = "int"; };
     float_ = { _htag = "float"; };
@@ -53,10 +53,9 @@ in {
     let_ = name: type: val: bodyFn:
       { _htag = "let"; inherit name type val; body = bodyFn; };
 
-    # Intro forms and term combinators. `true_` / `false_` / `tt`
-    # are derived μ-form constructors (see the Bool/Unit/Void block
-    # below); the kernel-primitive nodes for them live under
-    # `truePrim_` / `falsePrim_` / `ttPrim`.
+    # Intro forms and term combinators. `true_` / `false_` are derived
+    # μ-form constructors (see the Bool/Unit/Void block below);
+    # `tt` / `ttPrim` are two names for the kernel-primitive Unit intro.
     pair = fst: snd: { _htag = "pair"; inherit fst snd; };
     refl = { _htag = "refl"; };
 
@@ -71,15 +70,10 @@ in {
     strEq = lhs: rhs: { _htag = "str-eq"; inherit lhs rhs; };
     opaqueLam = nixFn: piHoas:
       { _htag = "opaque-lam"; _fnBox = { _fn = nixFn; }; inherit nixFn piHoas; };
-    # Surface `absurd` routes through `absurdFin0`. After the Phase 9
-    # rebind, the HOAS `void` is `app fin zero` (a derived `VMu (Fin 0
-    # desc) zero`), not the kernel's `V.vVoid` primitive. The kernel's
-    # `absurd` INFER rule at `check/infer.nix:125-129` checks its
-    # witness against `V.vVoid`, so it no longer matches derived-void
-    # witnesses. `absurdFin0` generalises: it takes a `Fin 0` witness
-    # and discharges by no-confusion on `Eq Nat (succ m) zero`.
-    # Internal sites that still produce `V.vVoid` witnesses (e.g.
-    # `noConfSuccZero m emz`) use `absurdPrim` directly.
+    # Surface `absurd` routes through `absurdFin0`: the HOAS `void` is
+    # `app fin zero` (a derived `μ (Fin 0 desc) zero`), and `absurdFin0`
+    # discharges a witness of `Fin 0` by no-confusion on `Eq Nat (succ
+    # m) zero` via a direct J-transport at motive `natCaseU P Unit`.
     absurd = type: term: self.absurdFin0 type term;
     ann = term: type: { _htag = "ann"; inherit term type; };
     app = fn: arg: { _htag = "app"; inherit fn arg; };
@@ -90,9 +84,8 @@ in {
     # `let_`-bindings at their required types before the application spine,
     # making motive/step/base inferable (VAR via lookupType) and emitting a
     # `let_ P … let_ B … let_ S … <elim>` Tm shape. The user-facing
-    # `boolElim` is derived in the Bool/Unit/Void block below; the
-    # kernel-primitive `bool-elim` node stays reachable internally via
-    # `boolElimPrim`.
+    # `boolElim` is derived in the Bool/Unit/Void block below via
+    # `descInd` on the plus-coproduct `boolDesc`.
     ind = motive: base: step: scrut:
       let
         inherit (self) forall app let_ nat zero succ u NatDT;
@@ -104,27 +97,15 @@ in {
                 forall "_" (app P k) (_: app P (succ k)))) step (S:
         app (app (app (app NatDT.elim P) B) S) scrut)));
 
-    # Stable alias for the kernel-primitive bool-elim node. Retained as
-    # an internal-only alias pending Phase D kernel-primitive retirement
-    # — no scaffolding now references it (prelude descriptions, the
-    # datatype macro's spine/dispatch, and the derived `boolElim` all
-    # dispatch via the plus-coproduct / `sumElimPrim` path).
-    boolElimPrim = motive: onTrue: onFalse: scrut:
-      { _htag = "bool-elim"; inherit motive onTrue onFalse scrut; };
-
-    # Stable aliases for the kernel-primitive Bool/Unit/Void type and
-    # intro nodes. Internal-only: description scaffolding and any other
-    # module-internal site that must reference the kernel primitives
-    # directly uses these aliases rather than the surface names `bool`,
-    # `true_`, etc. (which are the derived μ-forms in the Bool/Unit/Void
-    # block below). Not exported from the HOAS module.
-    boolPrim   = { _htag = "bool"; };
-    truePrim_  = { _htag = "true"; };
-    falsePrim_ = { _htag = "false"; };
+    # Stable aliases for the kernel-primitive Unit type and its intro.
+    # Unit is the bootstrap singleton of the description machinery —
+    # ⊤-slice I parameter, retI leaves, and various scaffolding sites
+    # reference `unitPrim`/`ttPrim` directly. Bool/Void/Absurd are
+    # derived further down: `bool = μ ⊤ boolDesc tt` with `boolDesc =
+    # plus (retI tt) (retI tt)`, `void = app fin zero`, `absurd =
+    # absurdFin0`.
     unitPrim   = { _htag = "unit"; };
     ttPrim     = { _htag = "tt"; };
-    voidPrim   = { _htag = "void"; };
-    absurdPrim = type: term: { _htag = "absurd"; inherit type term; };
 
     # Kernel-primitive sum HOAS surface. The user-facing `sum`/`inl`/`inr`
     # at `datatype.nix` are description-derived `μ(sumDesc)` forms; these
@@ -225,76 +206,16 @@ in {
     plusI = A: B: { _htag = "desc-plus"; inherit A B; };
     plus = A: B: self.plusI A B;
 
-    # Nat-specific equality lemmas. Thin wrappers over `j` at type `Nat`;
-    # consumed by `finElim` (J-transport on the ret-leaf `Eq Nat (succ m) n`)
-    # and `absurdFin0` (no-confusion on `Eq Nat (succ m) zero`).
-    symNat = a: b: e:
-      self.j self.nat a
-        (self.lam "x" self.nat (x: self.lam "_" (self.eq self.nat a x) (_:
-          self.eq self.nat x a)))
-        self.refl
-        b e;
-
+    # Nat-specific equality lemma. Thin wrapper over `j` at type `Nat`;
+    # consumed by `absurdFin0` to compose the ret-leaf `em : Eq Nat (succ
+    # m) nArg` with `e0 : Eq Nat nArg zero` into `emz : Eq Nat (succ m)
+    # zero`.
     transNat = a: b: c: eab: ebc:
       self.j self.nat b
         (self.lam "x" self.nat (x: self.lam "_" (self.eq self.nat b x) (_:
           self.eq self.nat a x)))
         eab
         c ebc;
-
-    # `natDisc n` — discriminator with `natDisc zero ≡ ⊤` and `natDisc (succ _) ≡ ⊥`.
-    # Used by `noConfSuccZero` below. Reified as an ann-wrapped HOAS lam so
-    # `app natDisc x` is inferable in the bidirectional kernel (bare lam is
-    # checkable-only; ann routes synthesis through the infer rule, matching
-    # the `fin` / `descPi` precedent).
-    #
-    # The eliminator route is `descInd nat.D` directly, NOT through the HOAS
-    # `ind` wrapper or `NatDT.elim`: both pin their motive codomain at `u 0`
-    # via `piMotiveTy = forall _ nat (_: u 0)`, but `natDisc`'s motive body
-    # is `u 0` itself — a type at `U(1)`, not `U(0)` — so neither pinned
-    # wrapper accepts it. Kernel `desc-ind` accepts motives at any universe
-    # level; descInd over `nat.D` with motive `(_i:Unit) → μ nat.D _i → U(0)`
-    # is well-typed and produces a term whose value at `zero`/`succ _`
-    # β-reduces to `unit`/`void`.
-    #
-    # The step dispatches on the plus summand via `sumElimPrim` on
-    # `d : Sum (⟦descRet⟧ muFam iArg) (⟦descRec descRet⟧ muFam iArg)` —
-    # the inl branch yields `unitPrim`, the inr branch yields `voidPrim`.
-    # The IH is discarded — discrimination doesn't depend on recursion.
-    natDisc =
-      let
-        inherit (self) ann lam forall app nat u unitPrim voidPrim
-                        ttPrim mu descInd interpHoas allHoas
-                        sumPrim sumElimPrim descRet descRec;
-        D = nat.D;
-        muFam = lam "_i" unitPrim (iArg: mu D iArg);
-        motive = lam "_i" unitPrim (_: lam "_x" (mu D _) (_: u 0));
-        lInterpAt = iArg_: interpHoas unitPrim descRet muFam iArg_;
-        rInterpAt = iArg_: interpHoas unitPrim (descRec descRet) muFam iArg_;
-        step = lam "_i" unitPrim (iArg:
-               lam "d" (interpHoas unitPrim D muFam iArg) (d:
-               lam "_ih" (allHoas unitPrim D D motive iArg d) (_:
-                 let
-                   lInterp = lInterpAt iArg;
-                   rInterp = rInterpAt iArg;
-                 in sumElimPrim lInterp rInterp
-                      (lam "_s" (sumPrim lInterp rInterp) (_: u 0))
-                      (lam "_" lInterp (_: unitPrim))
-                      (lam "_" rInterp (_: voidPrim))
-                      d)));
-      in
-      ann (lam "n" nat (n: descInd D motive step ttPrim n))
-          (forall "_" nat (_: u 0));
-
-    # noConfSuccZero : Π(m : Nat). Eq Nat (succ m) zero → Void
-    # J-transports `tt : natDisc zero` along `sym e` to `_ : natDisc (succ m) ≡ ⊥`.
-    noConfSuccZero = m: e:
-      self.j self.nat self.zero
-        (self.lam "x" self.nat (x: self.lam "_" (self.eq self.nat self.zero x) (_:
-          self.app self.natDisc x)))
-        self.ttPrim
-        (self.succ m)
-        (self.symNat (self.succ m) self.zero e);
 
     # Indexed description of the Fin family via the first-class `plus`
     # coproduct. Two summands sharing a `succ m` target-index pattern
@@ -431,22 +352,21 @@ in {
     # absurdFin0 : (P : U) → Fin 0 → P
     # Fin 0 is vacuous: both constructor payloads carry an `em : Eq (succ m) n`
     # leaf, and at n = 0 combining with the outer `e0 : Eq n zero` gives
-    # `Eq (succ m) zero`, which `noConfSuccZero` refutes.
-    #
-    # Dispatches via `sumElimPrim` on the plus-summand payload. Each
-    # summand's ret-leaf carries `em : Eq (succ m) nArg`; J-transport
-    # and `transNat` compose it with `e0` to yield `Eq (succ m) zero`,
-    # which `noConfSuccZero` refutes.
+    # `emz : Eq (succ m) zero`. The no-confusion step J-transports `tt :
+    # Unit` along `emz` at motive `λx _. natCaseU P Unit x`, landing at
+    # `Unit` when x ≡ succ m (base case: `tt` inhabits `Unit`) and at `P`
+    # when x ≡ zero (the goal). A single J targets `P` directly — no
+    # `Void` intermediate is required.
     absurdFin0 = P: x:
       let
         inherit (self)
           lam forall app fst_ snd_
-          nat zero succ absurdPrim
+          nat zero succ j natCaseU
           eq refl
           muI descCon descInd interpHoas allHoas
           sumPrim sumElimPrim inlPrim inrPrim
           descArg retI recI
-          finDesc transNat noConfSuccZero;
+          finDesc transNat unitPrim ttPrim;
 
         muFam = lam "i" nat (i: muI nat finDesc i);
 
@@ -457,6 +377,17 @@ in {
 
         Q = lam "i" nat (iArg: lam "_" (muI nat finDesc iArg) (_:
               forall "_" (eq nat iArg zero) (_: P)));
+
+        # noConf m emz : P given emz : Eq Nat (succ m) zero.
+        # J at motive `λx _. natCaseU P Unit x` with base `tt : Unit`;
+        # result `natCaseU P Unit zero ≡ P`.
+        noConf = m: emz:
+          j nat (succ m)
+            (lam "x" nat (x: lam "_" (eq nat (succ m) x) (_:
+              app (natCaseU P unitPrim) x)))
+            ttPrim
+            zero
+            emz;
 
         step = lam "n" nat (nArg:
                lam "d" (interpHoas nat finDesc muFam nArg) (d:
@@ -470,24 +401,25 @@ in {
                        let m = fst_ r;
                            em = snd_ r;
                            emz = transNat (succ m) nArg zero em e0;
-                       in absurdPrim P (noConfSuccZero m emz));
+                       in noConf m emz);
                      onInr = lam "r" rInterp (r:
                        let m = fst_ r;
                            em = snd_ (snd_ r);
                            emz = transNat (succ m) nArg zero em e0;
-                       in absurdPrim P (noConfSuccZero m emz));
+                       in noConf m emz);
                    in sumElimPrim lInterp rInterp sumMot onInl onInr d))));
       in app (descInd finDesc Q step zero x) refl;
 
     # natCaseU A B : Nat → U — `natCaseU A B zero ≡ A`;
-    # `natCaseU A B (succ _) ≡ B`. Generalises `natDisc` to arbitrary
-    # U-valued zero and succ cases; same `descInd nat.D` +
-    # `sumElimPrim`-on-`d` template, with the two branches parameterised.
-    # Used by `vhead` to dispatch the vecElim motive across the
-    # vnil/vcons cases (`natCaseU unit A`: vnil target is `unit`,
+    # `natCaseU A B (succ _) ≡ B`. Implemented as `descInd nat.D` with
+    # step dispatching via `sumElimPrim` on `d : Sum (⟦descRet⟧ muFam
+    # iArg) (⟦descRec descRet⟧ muFam iArg)` — the inl branch yields A,
+    # the inr branch yields B. Used by `vhead` to dispatch the vecElim
+    # motive across vnil/vcons (`natCaseU unit A`: vnil target is `unit`,
     # inhabited by `tt`; vcons target is `A`, inhabited by the head
-    # element). The IH is discarded — discrimination doesn't depend on
-    # recursion.
+    # element) and by `absurdFin0` to target `P` at `zero` and `Unit` at
+    # `succ _` in the no-confusion J-transport. The IH is discarded —
+    # discrimination doesn't depend on recursion.
     natCaseU = A: B:
       let
         inherit (self) ann lam forall app nat u unitPrim
@@ -657,8 +589,8 @@ in {
     # payload via `sumElimPrim` dispatch). Used by `vtail` to build the
     # vecElim motive `P n xs = natPredCase A n` so the vnil branch
     # targets `unit` (filled by `tt`) and the vcons branch targets
-    # `vec A m` (filled by the tail). Generalises the
-    # `natCaseU`/`natDisc` pattern to payload-dependent succ cases.
+    # `vec A m` (filled by the tail). Generalises the `natCaseU`
+    # pattern to payload-dependent succ cases.
     natPredCase = A:
       let
         inherit (self) ann lam forall app nat u unitPrim
@@ -834,9 +766,9 @@ in {
     #
     # `boolElim` follows the `finElim` template: `descInd` over
     # `boolDesc`, step body dispatching via `sumElimPrim` on
-    # `d : Sum (Eq ⊤ ttPrim iArg) (Eq ⊤ ttPrim iArg)` (no longer on a
-    # `boolPrim` tag), J-transporting each user-supplied branch across
-    # the leaf-equality witness. The J-base is `refl` at `iArg = ttPrim`
+    # `d : Sum (Eq ⊤ ttPrim iArg) (Eq ⊤ ttPrim iArg)`, J-transporting
+    # each user-supplied branch across the leaf-equality witness. The
+    # J-base is `refl` at `iArg = ttPrim`
     # and the motive never identifies distinct proofs, so J usage
     # requires no UIP. `sumElimPrim` is the kernel-primitive sum-elim
     # alias (mirrors `sumPrim` / `inlPrim` / `inrPrim`); routing through

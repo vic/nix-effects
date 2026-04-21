@@ -29,9 +29,7 @@ in {
     checkTypeLevel = ctx: tm:
       let t = tm.tag; in
       if t == "nat" then pure { term = T.mkNat; level = 0; }
-      else if t == "bool" then pure { term = T.mkBool; level = 0; }
       else if t == "unit" then pure { term = T.mkUnit; level = 0; }
-      else if t == "void" then pure { term = T.mkVoid; level = 0; }
       else if t == "string" then pure { term = T.mkString; level = 0; }
       else if t == "int" then pure { term = T.mkInt; level = 0; }
       else if t == "float" then pure { term = T.mkFloat; level = 0; }

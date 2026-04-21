@@ -44,9 +44,6 @@ let
         n = builtins.length chain - 1;
         base = (builtins.elemAt chain n).val;
       in builtins.foldl' (acc: _: T.mkSucc acc) (quote d base) (builtins.genList (x: x) n)
-    else if t == "VBool" then T.mkBool
-    else if t == "VTrue" then T.mkTrue
-    else if t == "VFalse" then T.mkFalse
     else if t == "VList" then T.mkList (quote d v.elem)
     else if t == "VNil" then T.mkNil (quote d v.elem)
     # VCons — trampolined for deep lists (5000+ elements)
@@ -71,7 +68,6 @@ let
       ) (quote d base) (builtins.genList (x: x) n)
     else if t == "VUnit" then T.mkUnit
     else if t == "VTt" then T.mkTt
-    else if t == "VVoid" then T.mkVoid
     else if t == "VSum" then T.mkSum (quote d v.left) (quote d v.right)
     else if t == "VInl" then T.mkInl (quote d v.left) (quote d v.right) (quote d v.val)
     else if t == "VInr" then T.mkInr (quote d v.left) (quote d v.right) (quote d v.val)
@@ -175,11 +171,8 @@ let
     else if t == "ESnd" then T.mkSnd head
     else if t == "ENatElim" then
       T.mkNatElim (quote d elim.motive) (quote d elim.base) (quote d elim.step) head
-    else if t == "EBoolElim" then
-      T.mkBoolElim (quote d elim.motive) (quote d elim.onTrue) (quote d elim.onFalse) head
     else if t == "EListElim" then
       T.mkListElim (quote d elim.elem) (quote d elim.motive) (quote d elim.onNil) (quote d elim.onCons) head
-    else if t == "EAbsurd" then T.mkAbsurd (quote d elim.type) head
     else if t == "ESumElim" then
       T.mkSumElim (quote d elim.left) (quote d elim.right) (quote d elim.motive)
         (quote d elim.onLeft) (quote d elim.onRight) head
@@ -231,9 +224,9 @@ in mk {
   '';
   value = { inherit quote quoteSp quoteElim nf lvl2Ix; };
   tests = let
-    inherit (V) vNat vZero vSucc vBool vTrue vFalse vPi vLam vSigma vPair
-      vList vNil vCons vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
-      mkClosure eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
+    inherit (V) vNat vZero vSucc vPi vLam vSigma vPair
+      vList vNil vCons vUnit vTt vSum vInl vInr vEq vRefl vU vNe
+      mkClosure eApp eFst eSnd eNatElim eListElim eSumElim eJ;
   in {
     # -- Level to index --
     "lvl2ix-0" = { expr = lvl2Ix 1 0; expected = 0; };
@@ -244,12 +237,8 @@ in mk {
     "quote-nat" = { expr = (quote 0 vNat).tag; expected = "nat"; };
     "quote-zero" = { expr = (quote 0 vZero).tag; expected = "zero"; };
     "quote-succ" = { expr = (quote 0 (vSucc vZero)).tag; expected = "succ"; };
-    "quote-bool" = { expr = (quote 0 vBool).tag; expected = "bool"; };
-    "quote-true" = { expr = (quote 0 vTrue).tag; expected = "true"; };
-    "quote-false" = { expr = (quote 0 vFalse).tag; expected = "false"; };
     "quote-unit" = { expr = (quote 0 vUnit).tag; expected = "unit"; };
     "quote-tt" = { expr = (quote 0 vTt).tag; expected = "tt"; };
-    "quote-void" = { expr = (quote 0 vVoid).tag; expected = "void"; };
     "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
     "quote-U0" = { expr = (quote 0 (vU 0)).tag; expected = "U"; };
     "quote-U0-level" = { expr = (quote 0 (vU 0)).level; expected = 0; };
@@ -271,13 +260,13 @@ in mk {
     "quote-any-lit" = { expr = (quote 0 V.vAnyLit).tag; expected = "any-lit"; };
 
     # -- Compound values --
-    "quote-pair" = { expr = (quote 0 (vPair vZero vTrue)).tag; expected = "pair"; };
+    "quote-pair" = { expr = (quote 0 (vPair vZero vTt)).tag; expected = "pair"; };
     "quote-list" = { expr = (quote 0 (vList vNat)).tag; expected = "list"; };
     "quote-nil" = { expr = (quote 0 (vNil vNat)).tag; expected = "nil"; };
     "quote-cons" = { expr = (quote 0 (vCons vNat vZero (vNil vNat))).tag; expected = "cons"; };
-    "quote-sum" = { expr = (quote 0 (vSum vNat vBool)).tag; expected = "sum"; };
-    "quote-inl" = { expr = (quote 0 (vInl vNat vBool vZero)).tag; expected = "inl"; };
-    "quote-inr" = { expr = (quote 0 (vInr vNat vBool vTrue)).tag; expected = "inr"; };
+    "quote-sum" = { expr = (quote 0 (vSum vNat vUnit)).tag; expected = "sum"; };
+    "quote-inl" = { expr = (quote 0 (vInl vNat vUnit vZero)).tag; expected = "inl"; };
+    "quote-inr" = { expr = (quote 0 (vInr vNat vUnit vTt)).tag; expected = "inr"; };
     "quote-eq" = { expr = (quote 0 (vEq vNat vZero vZero)).tag; expected = "eq"; };
 
     # -- Neutrals --
@@ -312,20 +301,12 @@ in mk {
       expr = (quote 1 (vNe 0 [ (eNatElim vNat vZero vZero) ])).tag;
       expected = "nat-elim";
     };
-    "quote-ne-bool-elim" = {
-      expr = (quote 1 (vNe 0 [ (eBoolElim vNat vZero (vSucc vZero)) ])).tag;
-      expected = "bool-elim";
-    };
     "quote-ne-list-elim" = {
       expr = (quote 1 (vNe 0 [ (eListElim vNat vNat vZero vZero) ])).tag;
       expected = "list-elim";
     };
-    "quote-ne-absurd" = {
-      expr = (quote 1 (vNe 0 [ (eAbsurd vNat) ])).tag;
-      expected = "absurd";
-    };
     "quote-ne-sum-elim" = {
-      expr = (quote 1 (vNe 0 [ (eSumElim vNat vBool vNat vZero vZero) ])).tag;
+      expr = (quote 1 (vNe 0 [ (eSumElim vNat vUnit vNat vZero vZero) ])).tag;
       expected = "sum-elim";
     };
     "quote-ne-j" = {
@@ -337,7 +318,7 @@ in mk {
     "quote-desc" = { expr = (quote 0 (V.vDesc V.vUnit)).tag; expected = "desc"; };
     "quote-desc-ret" = { expr = (quote 0 (V.vDescRet V.vTt)).tag; expected = "desc-ret"; };
     "quote-desc-arg" = {
-      expr = (quote 0 (V.vDescArg V.vBool (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
+      expr = (quote 0 (V.vDescArg V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
       expected = "desc-arg";
     };
     "quote-desc-rec" = {
@@ -345,18 +326,18 @@ in mk {
       expected = "desc-rec";
     };
     "quote-desc-pi" = {
-      expr = let f = V.vLam "_" V.vBool (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vBool f (V.vDescRet V.vTt))).tag;
+      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
+        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).tag;
       expected = "desc-pi";
     };
     "quote-desc-pi-S" = {
-      expr = let f = V.vLam "_" V.vBool (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vBool f (V.vDescRet V.vTt))).S.tag;
-      expected = "bool";
+      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
+        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).S.tag;
+      expected = "nat";
     };
     "quote-desc-pi-D" = {
-      expr = let f = V.vLam "_" V.vBool (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vBool f (V.vDescRet V.vTt))).D.tag;
+      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
+        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).D.tag;
       expected = "desc-ret";
     };
     "quote-mu" = {
@@ -382,7 +363,7 @@ in mk {
       expected = "desc-pi";
     };
     "nf-desc-pi-roundtrip" = {
-      expr = let D = T.mkDescPi T.mkBool (T.mkLam "_" T.mkBool T.mkTt) (T.mkDescRet T.mkTt); in
+      expr = let D = T.mkDescPi T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
         nf [] (nf [] D) == nf [] D;
       expected = true;
     };
@@ -404,7 +385,7 @@ in mk {
       expected = 0;
     };
     "quote-sigma" = {
-      expr = (quote 0 (vSigma "x" vNat (mkClosure [] T.mkBool))).tag;
+      expr = (quote 0 (vSigma "x" vNat (mkClosure [] T.mkUnit))).tag;
       expected = "sigma";
     };
 
@@ -422,7 +403,7 @@ in mk {
       expected = "zero";
     };
     "nf-fst-pair" = {
-      expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTrue))).tag;
+      expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTt))).tag;
       expected = "zero";
     };
 

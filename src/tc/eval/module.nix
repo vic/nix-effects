@@ -25,8 +25,7 @@ api.mk {
 
     - `vApp : Val → Val → Val` — apply a function value (beta-reduces VLam, extends spine for VNe)
     - `vFst`, `vSnd` — pair projections
-    - `vNatElim`, `vBoolElim`, `vListElim` — inductive eliminators
-    - `vAbsurd` — ex falso (only on neutrals)
+    - `vNatElim`, `vListElim` — inductive eliminators
     - `vSumElim` — sum elimination
     - `vJ` — identity elimination (computes to base on VRefl)
 
@@ -46,7 +45,7 @@ api.mk {
   value = {
     inherit (self)
       eval evalF instantiate
-      vApp vFst vSnd vNatElim vBoolElim vListElim vAbsurd vSumElim vJ
+      vApp vFst vSnd vNatElim vListElim vSumElim vJ
       vDescInd vDescElim interp allTy linearProfile;
   };
   tests = partTests;
