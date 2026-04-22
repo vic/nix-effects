@@ -14,11 +14,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: DeterminateSystems/nix-installer-action@main
-
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Plain upstream Nix is sufficient; this job just runs
+          # `nix flake check` and doesn't gate on evaluator version.
+          # Skipping Determinate avoids the FlakeHub login path.
+          determinate: false
 
       - name: Run tests
         run: nix flake check
@@ -29,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract release notes
         run: |

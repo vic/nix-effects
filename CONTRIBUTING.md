@@ -83,8 +83,10 @@ current run on another, and will fail with a clear message. Both the
 shell driver and the pure finalize layer enforce this.
 
 `baseline.json` records the Nix version it was captured with. CI pins
-the evaluator to match. To change Nix versions, update both together:
-see **Baseline refresh** below.
+the evaluator to match via `nix-package-url` on the installer step in
+`.github/workflows/bench-gate.yml`. To change Nix versions, update
+both the baseline and the workflow pin together: see **Baseline
+refresh** below.
 
 ## Running tests
 
@@ -163,8 +165,13 @@ result/bin/nix-effects-bench-gate \
   --current  bench/history/baseline.json \
   --budgets  bench/budgets.toml
 
-# 4. Commit bench/history/baseline.{json,md} together. The working
-#    copy has already overwritten them in step 2.
+# 4. If the Nix version changed, update the CI pin to match. The URL
+#    in .github/workflows/bench-gate.yml under `nix-package-url:` must
+#    resolve to the same Nix version recorded in baseline.json.
+
+# 5. Commit bench/history/baseline.{json,md} together (and the workflow
+#    if step 4 applied). The working copy has already overwritten the
+#    baseline files in step 2.
 git add bench/history/baseline.json bench/history/baseline.md
 git commit -m "bench: refresh baseline (<reason>)"
 ```

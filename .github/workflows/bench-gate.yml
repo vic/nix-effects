@@ -22,15 +22,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history is needed for --since to resolve commit-trailer
           # overrides against the PR base branch.
           fetch-depth: 0
 
-      - uses: DeterminateSystems/nix-installer-action@main
-
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Install plain upstream Nix rather than Determinate Nix.
+          # The gate's Nix-version guard demands CI run the same Nix
+          # that captured the baseline (2.31.4); `nix-package-url`
+          # below makes that invariant explicit. Determinate's
+          # installer-version ↔ bundled-Nix coupling would let our CI
+          # Nix drift on any Determinate release, so bypassing it
+          # removes the hidden axis. On baseline refresh, bump the URL
+          # here and the version recorded in bench/history/baseline.json
+          # together.
+          determinate: false
+          nix-package-url: https://releases.nixos.org/nix/nix-2.31.4/nix-2.31.4-x86_64-linux.tar.xz
 
       - name: Determine trailer range
         id: range
@@ -88,7 +98,7 @@ jobs:
 
       - name: Upload bench artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bench-gate-${{ github.sha }}
           path: |
