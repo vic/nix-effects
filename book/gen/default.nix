@@ -36,6 +36,10 @@ let
   # Containers are not rendered as pages; their children are.
   isContainer = node: builtins.isAttrs node && !(node ? doc);
 
+  # `doc` (string) and `tests` (attrset of expr/expected pairs) are
+  # meta-attributes of the containing node, not children to recurse into.
+  children = node: lib.filterAttrs (k: _: k != "doc" && k != "tests") node;
+
   # Recursively generate { name (relative path), path (store path) } entries.
   genEntries = prefix: node:
     lib.foldlAttrs (acc: key: value:
@@ -45,7 +49,7 @@ let
         name = "${prefix}${key}.md";
         path = pkgs.writeText "${key}.md" (renderPage key value);
       }]
-    ) [] node;
+    ) [] (children node);
 
 in
   pkgs.linkFarm "nix-effects-api-docs" (genEntries "" docs)
