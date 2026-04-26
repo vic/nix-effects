@@ -99,6 +99,14 @@ let
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
       [[ -d "$repo_root" ]] || { echo "repo root not found: $repo_root" >&2; exit 2; }
 
+      # Auto-discover <bench-dir>/budgets.toml when --budgets is omitted.
+      # The file carries cpu budgets and the allocNoiseLimited list; without
+      # it, test-suite-shaped workloads fire false hard-fails on alloc.
+      if [[ -z "$budgets" && -f "$bench_dir/budgets.toml" ]]; then
+        budgets="$bench_dir/budgets.toml"
+        echo "bench-gate: auto-applying $budgets" >&2
+      fi
+
       baseline_name=$(basename "$baseline" .json)
       current_name=$(basename "$current" .json)
 

@@ -2,6 +2,7 @@
 
 - [Introduction](introduction.md)
 - [Getting Started](getting-started.md)
+- [Sugar](sugar.md)
 - [Proof Guide](proof-guide.md)
 - [Theory](theory.md)
 - [Trampoline](trampoline.md)

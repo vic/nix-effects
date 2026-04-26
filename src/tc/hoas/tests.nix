@@ -13,14 +13,15 @@ let
   inherit (self)
     nat bool unit void string int_ float_ attrs path function_ any
     listOf sum eq u
+    level levelZero levelSuc levelMax
     forall sigma lam let_
     zero succ true_ false_ tt nil cons pair inl inr refl
     stringLit intLit floatLit attrsLit pathLit fnLit anyLit
     opaqueLam absurd ann app fst_ snd_
     ind boolElim listElim sumElim
-    desc mu descRet descArg descRec descPi descCon descElim
-    descI muI retI recI piI plusI plus
-    interpHoas allHoas natDesc listDesc sumDesc
+    desc descAt mu descRet descArg descRec descPi descCon descElim
+    descI descIAt muI retI recI piI plusI plus
+    interpHoasAt allHoasAt natDesc listDesc sumDesc descDesc iso
     fin fzero fsuc finElim absurdFin0
     natCaseU natPredCase vec vnil vcons vecElim vhead vtail
     eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd
@@ -37,7 +38,7 @@ in {
     "elab-unit" = { expr = (elab unit).tag; expected = "unit"; };
     "elab-void" = { expr = (elab void).tag; expected = "app"; };
     "elab-U0" = { expr = (elab (u 0)).tag; expected = "U"; };
-    "elab-U0-level" = { expr = (elab (u 0)).level; expected = 0; };
+    "elab-U0-level" = { expr = (elab (u 0)).level.tag; expected = "level-zero"; };
     "elab-list" = { expr = (elab (listOf nat)).tag; expected = "app"; };
     "elab-sum" = { expr = (elab (sum nat bool)).tag; expected = "app"; };
     "elab-eq" = { expr = (elab (eq nat zero zero)).tag; expected = "eq"; };
@@ -135,7 +136,7 @@ in {
     # desc-ind …`. The let-wrapping makes motive/step/base inferable (VAR
     # via lookupType) so the descInd check rule can type the body.
     "elab-nat-elim" = {
-      expr = (elab (ind (lam "n" nat (_: nat)) zero
+      expr = (elab (ind 0 (lam "n" nat (_: nat)) zero
         (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
         zero)).tag;
       expected = "let";
@@ -276,7 +277,7 @@ in {
     # 0 + 0 = 0 by computation: NatElim(_, 0, λk.λih.S(ih), 0) = 0, Refl
     "theorem-0-plus-0" = {
       expr = let
-        addZero = ind (lam "n" nat (_: nat)) zero
+        addZero = ind 0 (lam "n" nat (_: nat)) zero
           (lam "k" nat (_: lam "ih" nat (ih: succ ih))) zero;
         eqTy = eq nat addZero zero;
       in (checkHoas eqTy refl).tag;
@@ -305,7 +306,7 @@ in {
     "theorem-3-plus-0-eq-3" = {
       expr = let
         three = succ (succ (succ zero));
-        add_n_0 = ind (lam "n" nat (_: nat)) zero
+        add_n_0 = ind 0 (lam "n" nat (_: nat)) zero
           (lam "k" nat (_: lam "ih" nat (ih: succ ih))) three;
         eqTy = eq nat add_n_0 three;
       in (checkHoas eqTy refl).tag;
@@ -344,7 +345,7 @@ in {
         three = succ (succ (succ zero));
         five  = succ (succ (succ (succ (succ zero))));
         addTm = lam "m" nat (m: lam "n" nat (n:
-                  ind (lam "_" nat (_: nat))
+                  ind 0 (lam "_" nat (_: nat))
                       n
                       (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
                       m));
@@ -360,7 +361,7 @@ in {
       expr = let
         zeros = cons nat zero (cons nat zero (cons nat zero (nil nat)));
         three = succ (succ (succ zero));
-        lenTm = listElim nat (lam "_" (listOf nat) (_: nat))
+        lenTm = listElim 0 nat (lam "_" (listOf nat) (_: nat))
                   zero
                   (lam "h" nat (_:
                    lam "t" (listOf nat) (_:
@@ -381,7 +382,7 @@ in {
         scrut = inl nat nat seven;
         motiveNat = lam "_" (sum nat nat) (_: nat);
         idNat = lam "n" nat (n: n);
-        result = sumElim nat nat motiveNat idNat idNat scrut;
+        result = sumElim 0 nat nat motiveNat idNat idNat scrut;
         eqTy = eq nat result seven;
       in (checkHoas eqTy refl).tag;
       expected = "refl";
@@ -395,20 +396,20 @@ in {
         scrut = inr nat nat four;
         motiveNat = lam "_" (sum nat nat) (_: nat);
         idNat = lam "n" nat (n: n);
-        result = sumElim nat nat motiveNat idNat idNat scrut;
+        result = sumElim 0 nat nat motiveNat idNat idNat scrut;
         eqTy = eq nat result four;
       in (checkHoas eqTy refl).tag;
       expected = "refl";
     };
 
     # W-type wellformedness: μ(wDesc Bool (b: if b then Unit else Void)) : U(0).
-    # `wDesc A B = descArg A (a: descPi (B a) descRet)` — B is a Nix
-    # meta-level function (A → U at the HOAS surface), applied at
-    # elaboration time. This exercises the descPi case in the kernel's
-    # Desc check rule.
+    # `wDesc A B = descArg 0 A (a: descPi 0 (B a) descRet)` — B is a
+    # Nix meta-level function (A → U at the HOAS surface), applied at
+    # elaboration time. Exercises the descPi case in the kernel's Desc
+    # check rule; `k = 0` pins both domains to `U(0)`.
     "integration-desc-wtype-wellformed" = {
       expr = let
-        wDesc = A: B: descArg A (a: descPi (B a) descRet);
+        wDesc = A: B: descArg 0 A (a: descPi 0 (B a) descRet);
         wBool = wDesc bool (a:
                   boolElim 1 (lam "_" bool (_: u 0)) unit void a);
       in (checkHoas (u 0) (mu wBool tt)).tag;
@@ -440,7 +441,7 @@ in {
 
     "roundtrip-nat-elim" = {
       expr = let
-        tm = elab (ind (lam "n" nat (_: nat)) zero
+        tm = elab (ind 0 (lam "n" nat (_: nat)) zero
           (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
           (succ (succ zero)));
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
@@ -632,7 +633,7 @@ in {
                  lam "ihB" (forall "_" (u 0) (_: u 0)) (_:
                  lam "X" (u 0) (X':
                    sigma "_" X' (_: X'))))));
-        tm = descElim motive onRet onArg onRec onPi onPlus (ann descRet desc);
+        tm = descElim 0 motive onRet onArg onRec onPi onPlus (ann descRet desc);
       in (inferHoas tm).type.tag;
       expected = "VPi";
     };
@@ -681,20 +682,20 @@ in {
                  lam "B" desc (_:
                  lam "ihA" (u 0) (_:
                  lam "ihB" (u 0) (_: nat))));
-        tm = descElim motive onRet onArg onRec onPi onPlus (ann descRet desc);
+        tm = descElim 0 motive onRet onArg onRec onPi onPlus (ann descRet desc);
       in (inferHoas tm).type.tag;
       expected = "VU";
     };
 
-    # interpHoas ≡ interpF — compare nf of HOAS-elaborated term against
-    # the quoted result of eval.nix's interp at the same D, X.
+    # interpHoasAt 0 ≡ interpF — compare nf of HOAS-elaborated term
+    # against the quoted result of eval.nix's interp at the same D, X.
 
     # ⟦ret tt⟧(X)(tt) = Eq ⊤ tt tt — under I=⊤, the ret-leaf interpretation
     # is the propositional-equality witness collapsed by Unit-η.
-    "interpHoas-matches-interpF-ret" = {
+    "interpHoasAt-matches-interpF-ret" = {
       expr = let
         Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoas unit descRet Xfam tt));
+        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit descRet Xfam tt));
         dVal = E.eval [] (elab descRet);
         xVal = E.eval [] (elab Xfam);
         rhsNf = Q.quote 0 (E.interp V.vUnit dVal xVal V.vTt);
@@ -703,11 +704,11 @@ in {
     };
 
     # ⟦rec tt (ret tt)⟧(X)(tt) = Σ(_: X tt). Eq ⊤ tt tt
-    "interpHoas-matches-interpF-rec-ret" = {
+    "interpHoasAt-matches-interpF-rec-ret" = {
       expr = let
         D = descRec descRet;
         Xfam = lam "_" unit (_: bool);
-        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
         rhsNf = Q.quote 0 (E.interp V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
@@ -715,11 +716,11 @@ in {
     };
 
     # ⟦arg bool (b: ret tt)⟧(X)(tt) = Σ(b:Bool). Eq ⊤ tt tt
-    "interpHoas-matches-interpF-arg-bool" = {
+    "interpHoasAt-matches-interpF-arg-bool" = {
       expr = let
-        D = descArg bool (_: descRet);
+        D = descArg 0 bool (_: descRet);
         Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
         rhsNf = Q.quote 0 (E.interp V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
@@ -727,22 +728,159 @@ in {
     };
 
     # ⟦pi bool (λ_.tt) (ret tt)⟧(X)(tt) = Σ(_: Bool→X tt). Eq ⊤ tt tt
-    "interpHoas-matches-interpF-pi-bool" = {
+    "interpHoasAt-matches-interpF-pi-bool" = {
       expr = let
-        D = descPi bool descRet;
+        D = descPi 0 bool descRet;
         Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoas unit D Xfam tt));
+        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
         rhsNf = Q.quote 0 (E.interp V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
 
+    # `descArg k S T : desc^(max kS kT) I` — descArg at level 0 with
+    # body returning desc^0 yields desc^0. Inferred type level matches
+    # `VLevelZero` and the universe-of-the-type is `U(1)`.
+    "descArg-level-zero-infers-desc-zero" = {
+      expr = let
+        r = inferHoas (descArg 0 nat (s: retI (ann tt unit)));
+      in r.type.level.tag;
+      expected = "VLevelZero";
+    };
+    # descArg at level 1 (with body returning desc^0) yields desc^1.
+    # The contained `S = u 0 : U(1)` forces the description to live at
+    # universe `suc 1 = U(2)`.
+    "descArg-level-one-infers-desc-one" = {
+      expr = let
+        r = inferHoas (descArg 1 (u 0) (S: retI (ann tt unit)));
+        lev = r.type.level;
+      in lev.tag == "VLevelSuc" && lev.pred.tag == "VLevelZero";
+      expected = true;
+    };
+    # Polymorphic descArg: `Π(k:Level). desc^(suc k) ⊤`. Witnesses that
+    # the kVar at the descArg's level slot threads through to the
+    # inferred result type's level — closing the universe-polymorphism
+    # loop end-to-end.
+    "descArg-level-polymorphic-checks" = {
+      expr = (checkHoas
+        (forall "k" level (k: descIAt (levelSuc k) unit))
+        (lam "k" level (k: descArg (levelSuc k) (u k) (S: retI (ann tt unit))))) ? error;
+      expected = false;
+    };
+
+    # descDesc : Π(k:Level). Desc^(suc k) ⊤ — type-checks at the
+    # polymorphic universe-tracking forall (the descArg summand
+    # quantifies over `S : U(k)` with leading level `(suc k)`, which
+    # forces the description to live at `desc^(suc k) ⊤`), and
+    # instantiates cleanly at sample levels k ∈ {0, 1, 2}.
+    "descDesc-type-checks" = {
+      expr = (checkHoas
+        (forall "k" level (k: descAt (levelSuc k)))
+        descDesc) ? error;
+      expected = false;
+    };
+    "descDesc-at-level-zero" = {
+      expr = (checkHoas
+        (descAt (levelSuc levelZero))
+        (app descDesc levelZero)).tag;
+      expected = "app";
+    };
+    "descDesc-at-level-one" = {
+      expr = (checkHoas
+        (descAt (levelSuc (levelSuc levelZero)))
+        (app descDesc (levelSuc levelZero))) ? error;
+      expected = false;
+    };
+    "descDesc-at-level-two" = {
+      expr = (checkHoas
+        (descAt (levelSuc (levelSuc (levelSuc levelZero))))
+        (app descDesc (levelSuc (levelSuc levelZero)))) ? error;
+      expected = false;
+    };
+
+    # ===== iso reduction tests =====
+    #
+    # `iso : Π(k:Level). Iso (Desc^k ⊤) (μ(descDesc k) tt)` bundles
+    # `to`, `from`, `toFrom`, `fromTo`. With strict equality at the
+    # `descArg`/`descPi` level slot, every inhabitant of `Desc^k` is
+    # homogeneous-k by typing, so the iso is genuinely polymorphic
+    # rather than a section dressed in Π. These tests pin both the
+    # polymorphic type-shape and the round-trip behaviour as
+    # persistent regressions.
+
+    # iso elaborates to a polymorphic Π over Level.
+    "iso-type-checks-polymorphic" = {
+      expr = (inferHoas iso).type.tag;
+      expected = "VPi";
+    };
+
+    # iso instantiates at concrete levels — confirms the Π body
+    # normalises to the Σ-bundle (the Iso record) at each k.
+    "iso-at-level-zero-instantiates" = {
+      expr = (inferHoas (app iso levelZero)).type.tag;
+      expected = "VSigma";
+    };
+    "iso-at-level-one-instantiates" = {
+      expr = (inferHoas (app iso (levelSuc levelZero))).type.tag;
+      expected = "VSigma";
+    };
+    "iso-at-level-two-instantiates" = {
+      expr = (inferHoas (app iso (levelSuc (levelSuc levelZero)))).type.tag;
+      expected = "VSigma";
+    };
+
+    # Round-trip `from(to D) ≡ D` on prelude descriptions at k=0. Each
+    # exercises a different mix of `descDesc 0`'s plus-coproduct
+    # summands: natDesc hits ret + arg + rec; listDesc hits arg + rec
+    # + plus; sumDesc hits arg + plus.
+    "iso-roundtrip-natDesc-k0" = {
+      expr = let
+        iso0      = app iso levelZero;
+        to0       = fst_ iso0;
+        from0     = fst_ (snd_ iso0);
+        roundTrip = app from0 (app to0 natDesc);
+      in Q.nf [] (elab roundTrip) == Q.nf [] (elab natDesc);
+      expected = true;
+    };
+    "iso-roundtrip-listDesc-bool-k0" = {
+      expr = let
+        iso0      = app iso levelZero;
+        to0       = fst_ iso0;
+        from0     = fst_ (snd_ iso0);
+        D         = listDesc bool;
+        roundTrip = app from0 (app to0 D);
+      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expected = true;
+    };
+    "iso-roundtrip-sumDesc-nat-bool-k0" = {
+      expr = let
+        iso0      = app iso levelZero;
+        to0       = fst_ iso0;
+        from0     = fst_ (snd_ iso0);
+        D         = sumDesc nat bool;
+        roundTrip = app from0 (app to0 D);
+      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expected = true;
+    };
+
+    # `toFrom natDesc : Eq (Desc^0 ⊤) (from(to natDesc)) natDesc` —
+    # the proof component of the iso at a concrete input. Asserts
+    # that the recursive proof structure built by `descInd` is
+    # well-typed (the type tag is `VEq`).
+    "iso-toFrom-natDesc-typechecks" = {
+      expr = let
+        iso0    = app iso levelZero;
+        toFrom0 = fst_ (snd_ (snd_ iso0));
+      in (inferHoas (app toFrom0 natDesc)).type.tag;
+      expected = "VEq";
+    };
+
     # ⟦natDesc⟧(X)(tt) — exercises the boolElim inside the arg body
-    "interpHoas-matches-interpF-natDesc" = {
+    "interpHoasAt-matches-interpF-natDesc" = {
       expr = let
         Xfam = lam "_" unit (_: bool);
-        lhsNf = Q.nf [] (elab (interpHoas unit natDesc Xfam tt));
+        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit natDesc Xfam tt));
         rhsNf = Q.quote 0 (E.interp V.vUnit
           (E.eval [] (elab natDesc))
           (E.eval [] (elab Xfam)) V.vTt);
@@ -750,39 +888,39 @@ in {
       expected = true;
     };
 
-    # allHoas ≡ allTy — exercises the motive's d-binder annotation
-    # `d : interpHoas D (mu Douter)`, which onArg requires so that
+    # allHoasAt 0 ≡ allTy — exercises the motive's d-binder annotation
+    # `d : interpHoasAt 0 D (mu Douter)`, which onArg requires so that
     # `fst_ d` / `snd_ d` inside the body type-check under desc-elim's
     # paTy rule.
 
     # All ⊤ natDesc descRet P tt refl = ⊤ (no recursive arg; d : Eq ⊤ tt tt = refl)
-    "allHoas-matches-allTy-ret" = {
+    "allHoasAt-matches-allTy-ret" = {
       expr = let
         pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
-        lhsNf = Q.nf [] (elab (allHoas unit natDesc descRet pHoas tt refl));
+        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc descRet pHoas tt refl));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab descRet);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab refl);
-        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
 
     # All ⊤ natDesc (rec tt (ret tt)) P tt (zero, refl) exercises onRec.
     # d : ⟦rec tt (ret tt)⟧(muFam) tt = Σ(_: μnatDesc tt). Eq ⊤ tt tt.
-    "allHoas-matches-allTy-rec-ret" = {
+    "allHoasAt-matches-allTy-rec-ret" = {
       expr = let
         pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
         zeroH = descCon natDesc tt (pair true_ refl);
         dH = pair zeroH refl;
         D = descRec descRet;
-        lhsNf = Q.nf [] (elab (allHoas unit natDesc D pHoas tt dH));
+        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc D pHoas tt dH));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -790,17 +928,17 @@ in {
     # All ⊤ natDesc (arg bool (_: ret tt)) P tt (true_, refl) exercises
     # onArg — the case whose type-checking depends on the motive's
     # d-binder annotation. d inhabits Σ(b:Bool). Eq ⊤ tt tt.
-    "allHoas-matches-allTy-arg-bool-ret" = {
+    "allHoasAt-matches-allTy-arg-bool-ret" = {
       expr = let
         pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
-        D = descArg bool (_: descRet);
+        D = descArg 0 bool (_: descRet);
         dH = pair true_ refl;
-        lhsNf = Q.nf [] (elab (allHoas unit natDesc D pHoas tt dH));
+        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc D pHoas tt dH));
         douter = E.eval [] (elab natDesc);
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -823,7 +961,7 @@ in {
       expected = "desc-rec";
     };
 
-    # `piI Bool (λb. boolElim _ 2 3 b) (retI 4) : Desc Nat` — the index
+    # `piI 0 Bool (λb. boolElim _ 2 3 b) (retI 4) : Desc Nat` — the index
     # function is bool-dependent, exercising the non-constant f case.
     "indexed-desc-pi-at-nat-dependent-f" = {
       expr = let
@@ -831,7 +969,7 @@ in {
                  boolElim 0 (lam "_" bool (_: nat))
                           (natLit 2) (natLit 3) b))
                    (forall "_" bool (_: nat));
-        D = piI bool fAnn (retI (natLit 4));
+        D = piI 0 bool fAnn (retI (natLit 4));
       in (checkHoas (descI nat) D).tag;
       expected = "desc-pi";
     };
@@ -910,8 +1048,8 @@ in {
         T' = fx.tc.term;
         Dstuck = V.vNe 0 [];
         # P : (i:⊤) → μ Dstuck i → U — use a trivial constant.
-        P = V.vLam "i" V.vUnit (V.mkClosure [] (T'.mkU 0));
-        qt = Q.quote 1 (E.allTy V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
+        P = V.vLam "i" V.vUnit (V.mkClosure [] (T'.mkU T'.mkLevelZero));
+        qt = Q.quote 1 (E.allTy V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
         descElim = qt.fn.fn.fn;
       in descElim.onPi.body.domain.codomain.tag;
       expected = "unit";
@@ -923,6 +1061,36 @@ in {
     # W-types, `piField`-containing datatypes); a dedicated stuck
     # `descInd` probe analogous to the three above would pin it
     # directly.
+
+    # `E.allTy` accepts a non-concrete Level *value* — `mkAllMotive`
+    # threads K through the closure env as a Val, so a level
+    # expression like `max 0 0` (which doesn't reduce to a `VLevelSuc^n
+    # VLevelZero` chain at the value layer) flows through verbatim and
+    # ends up baked into the motive's universe annotation.
+    "allTy-accepts-non-concrete-level" = {
+      expr = let
+        Dstuck = V.vNe 0 [];
+        P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
+        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+        result = E.allTy Kval V.vUnit Dstuck Dstuck P V.vTt V.vRefl;
+      in result.tag;
+      expected = "VNe";
+    };
+
+    # The U-annotation embedded in the motive's Σ chain inhabits the
+    # provided level Val verbatim — quoting the stuck allTy result and
+    # navigating to the motive's body universe shows the `VLevelMax`
+    # node faithfully preserved (rather than coerced to a constant).
+    "allTy-non-concrete-level-preserved-in-quote" = {
+      expr = let
+        Dstuck = V.vNe 0 [];
+        P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
+        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+        qt = Q.quote 1 (E.allTy Kval V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
+        descElim = qt.fn.fn.fn;
+      in descElim.motive.body.codomain.codomain.codomain.level.tag;
+      expected = "level-max";
+    };
 
     # ===== Datatype macro =====
     # UnitDT: the n=1 degenerate case — singleton constructor with no
@@ -973,7 +1141,7 @@ in {
       # straight to the step (no field projection, no IH).
       expr = let
         U = datatype "Unit" [ (con "tt" []) ];
-        applied = app (app (app U.elim
+        applied = app (app (app (U.elim 0)
           (lam "x" U.T (_: unit)))
           tt)
           U.tt;
@@ -990,7 +1158,7 @@ in {
     "datatype-unit-elim-checks" = {
       expr = let
         U = datatype "Unit" [ (con "tt" []) ];
-        applied = app (app (app U.elim
+        applied = app (app (app (U.elim 0)
           (lam "x" U.T (_: unit)))
           tt)
           U.tt;
@@ -1001,7 +1169,7 @@ in {
     # the kernel can recover without reducing the body.
     "datatype-unit-elim-infers-pi" = {
       expr = let U = datatype "Unit" [ (con "tt" []) ];
-             in (inferHoas U.elim).type.tag;
+             in (inferHoas (U.elim 0)).type.tag;
       expected = "VPi";
     };
     "datatype-rejects-n0" = {
@@ -1097,7 +1265,7 @@ in {
     # Closed elim is inferable as a Π type via the ann wrapper.
     "datatype-bool-elim-infers-pi" = {
       expr = let B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-             in (inferHoas B.elim).type.tag;
+             in (inferHoas (B.elim 0)).type.tag;
       expected = "VPi";
     };
     # Reduction on the true scrutinee selects step_true.
@@ -1106,7 +1274,7 @@ in {
     "datatype-bool-elim-reduces-true" = {
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app B.elim
+        applied = app (app (app (app (B.elim 0)
           (lam "_" B.T (_: unit)))
           tt)  # step_true
           tt)  # step_false
@@ -1124,7 +1292,7 @@ in {
     "datatype-bool-elim-reduces-false" = {
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app B.elim
+        applied = app (app (app (app (B.elim 0)
           (lam "_" B.T (_: unit)))
           tt)
           tt)
@@ -1141,7 +1309,7 @@ in {
     "datatype-bool-elim-negates-true" = {
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        neg = scrut: app (app (app (app B.elim
+        neg = scrut: app (app (app (app (B.elim 0)
           (lam "_" B.T (_: B.T)))
           B.false)
           B.true)
@@ -1152,7 +1320,7 @@ in {
     "datatype-bool-elim-negates-false" = {
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        neg = scrut: app (app (app (app B.elim
+        neg = scrut: app (app (app (app (B.elim 0)
           (lam "_" B.T (_: B.T)))
           B.false)
           B.true)
@@ -1167,7 +1335,7 @@ in {
     "datatype-bool-elim-checks-applied" = {
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app B.elim
+        applied = app (app (app (app (B.elim 0)
           (lam "_" B.T (_: B.T)))
           B.false)
           B.true)
@@ -1294,7 +1462,7 @@ in {
       expr = let N = datatype "Nat" [
         (con "zero" [])
         (con "succ" [ (recField "pred") ])
-      ]; in (inferHoas N.elim).type.tag;
+      ]; in (inferHoas (N.elim 0)).type.tag;
       expected = "VPi";
     };
 
@@ -1319,8 +1487,8 @@ in {
         B = zero;
         S = lam "k" nat (k: lam "ih" nat (ih: ih));
         scrut = zero;
-        macroApplied = app (app (app (app N.elim M) B) S) scrut;
-        adapterApplied = ind M B S scrut;
+        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+        adapterApplied = ind 0 M B S scrut;
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
       expected = true;
     };
@@ -1337,8 +1505,8 @@ in {
         B = zero;
         S = lam "k" nat (k: lam "ih" nat (ih: ih));
         scrut = succ zero;
-        macroApplied = app (app (app (app N.elim M) B) S) scrut;
-        adapterApplied = ind M B S scrut;
+        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+        adapterApplied = ind 0 M B S scrut;
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
       expected = true;
     };
@@ -1354,8 +1522,8 @@ in {
         B = zero;
         S = lam "k" nat (k: lam "ih" nat (ih: succ ih));
         scrut = succ (succ zero);
-        macroApplied = app (app (app (app N.elim M) B) S) scrut;
-        adapterApplied = ind M B S scrut;
+        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+        adapterApplied = ind 0 M B S scrut;
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
       expected = true;
     };
@@ -1378,8 +1546,8 @@ in {
         # that binds `n : nat`, then applied to that bound variable. nf
         # cannot reduce it since `n` is neutral.
         macroAtN = lam "n" nat (n:
-          app (app (app (app N.elim M) B) S) n);
-        adapterAtN = lam "n" nat (n: ind M B S n);
+          app (app (app (app (N.elim 0) M) B) S) n);
+        adapterAtN = lam "n" nat (n: ind 0 M B S n);
       in Q.nf [] (elab macroAtN) == Q.nf [] (elab adapterAtN);
       expected = true;
     };
@@ -1398,7 +1566,7 @@ in {
         # add m n = elim (λ_. nat) n (λk.λih. succ ih) m
         # Recursing on m: zero case → n; succ k case → succ (add k n).
         add = m: n:
-          app (app (app (app N.elim
+          app (app (app (app (N.elim 0)
             (lam "_" N.T (_: N.T)))
             n)
             (lam "k" N.T (k: lam "ih" N.T (ih: app N.succ ih))))
@@ -1409,6 +1577,137 @@ in {
       in Q.nf [] (elab (add two three)) == Q.nf [] (elab five);
       expected = true;
     };
+
+    # Universe-K-1 motive: `N.elim 1` applied to a motive that returns
+    # `U(0)` inhabits a step type whose All-hypothesis lands in `U(1)`.
+    # Exercises the K-threading pipeline at a concrete K — HOAS allHoasAt
+    # emits `u 1`, kernel mkAllMotive bakes `term.mkU (mkLevelSuc mkLevelZero)`, and the
+    # motive level recovered from `checkMotive` lines up.
+    "datatype-nat-elim-universe-one" = {
+      expr = let
+        N = datatype "Nat" [ (con "zero" []) (con "succ" [ (recField "pred") ]) ];
+        M = lam "_" N.T (_: u 0);
+        B = unit;
+        S = lam "_k" N.T (_: lam "ih" (u 0) (ih: ih));
+        applied = app (app (app (app (N.elim 1) M) B) S) N.zero;
+      in (checkHoas (u 0) applied).tag;
+      expected = "app";
+    };
+
+    # Same shape through the HOAS `ind` combinator, which threads K into
+    # `N.elim` and allHoasAt identically. `ind` wraps the elim application
+    # in a `let_` chain that lifts P/B/S to inferable positions, so the
+    # elaborated tag is `let` rather than the bare `app` spine.
+    "ind-universe-one" = {
+      expr = (checkHoas (u 0) (ind 1 (lam "_" nat (_: u 0)) unit
+                                 (lam "_" nat (_: lam "_" (u 0) (ih: ih))) zero)).tag;
+      expected = "let";
+    };
+
+    # HOAS `ind` accepts a HOAS Level term in its `k` slot (not just a
+    # Nix-meta Int). `levelMax levelZero levelZero` is conv-equal to
+    # `levelZero` under the kernel's Level normaliser, so the motive
+    # `λ_:nat. nat` (returning U(0)) type-checks at this K — but the
+    # elaborated Tm carries a `level-max` node end-to-end, exercising
+    # the polymorphic-K route from HOAS through `elaborateLevel` and
+    # down to `mkAllMotive`'s closure-env-threaded `K_val`.
+    "ind-hoas-level-term-accepted" = {
+      expr = (checkHoas nat
+        (ind (levelMax levelZero levelZero)
+             (lam "_" nat (_: nat))
+             zero
+             (lam "_" nat (_: lam "_" nat (ih: succ ih)))
+             zero)).tag;
+      expected = "let";
+    };
+
+    # The level expression `levelMax levelZero levelZero` survives
+    # elaborate verbatim — `elaborateLevel` recurses on the HOAS
+    # construct rather than coercing it to a constant. The motive's
+    # universe annotation in the elaborated `let_ "P" piMotiveTy …`
+    # therefore carries a `level-max` Tm.
+    "ind-hoas-level-term-elab-shape" = {
+      expr = let
+        tm = elab (ind (levelMax levelZero levelZero)
+                       (lam "_" nat (_: nat))
+                       zero
+                       (lam "_" nat (_: lam "_" nat (ih: succ ih)))
+                       zero);
+      in tm.type.codomain.level.tag;
+      expected = "level-max";
+    };
+
+    # Universe-polymorphic eliminator: a function quantifying over a
+    # bound `k : Level`, with motive `P : nat → U(k)` returning at the
+    # bound level. `ind k …` in the body forces `descInd`'s infer rule
+    # to thread a `vNe` Level Val through `mkAllMotive`'s closure env
+    # — concrete-level coercion at the call site cannot apply, so the
+    # K-as-Val discipline is exercised end-to-end.
+    "ind-polymorphic-motive-k-bound" = {
+      expr = let
+        ty = forall "k" level (k:
+             forall "P" (forall "_" nat (_: u k)) (P:
+             forall "B" (app P zero) (_:
+             forall "S" (forall "n" nat (n:
+                          forall "_" (app P n) (_: app P (succ n)))) (_:
+             forall "n" nat (n: app P n)))));
+        body = lam "k" level (k:
+               lam "P" (forall "_" nat (_: u k)) (P:
+               lam "B" (app P zero) (B:
+               lam "S" (forall "n" nat (n:
+                         forall "_" (app P n) (_: app P (succ n)))) (S:
+               lam "n" nat (n: ind k P B S n)))));
+      in (checkHoas ty body).tag;
+      expected = "lam";
+    };
+
+    # `reifyLevel` is the inverse of `elaborateLevel`: kernel Level
+    # value → HOAS Level node. Concrete chains, `vLevelMax`, and `vNe`
+    # (a bound Level variable in the surrounding context) all reify
+    # without throwing — closing the round-trip kernel ↔ HOAS for
+    # universe levels.
+    "reifyLevel-zero" = {
+      expr = (fx.tc.hoas.reifyLevel V.vLevelZero)._htag;
+      expected = "level-zero";
+    };
+    "reifyLevel-suc" = {
+      expr = (fx.tc.hoas.reifyLevel (V.vLevelSuc V.vLevelZero))._htag;
+      expected = "level-suc";
+    };
+    "reifyLevel-max" = {
+      expr = (fx.tc.hoas.reifyLevel (V.vLevelMax V.vLevelZero V.vLevelZero))._htag;
+      expected = "level-max";
+    };
+    # A neutral Level (a bound Level Var at de Bruijn level 0) reifies
+    # to a marker. Wrapping the marker under a fresh `forall` that
+    # introduces a Level binder at depth 0 elaborates the marker back
+    # to `mkVar 0` — proving the round-trip Var → marker → Var.
+    "reifyLevel-vNe-round-trips-to-Var" = {
+      expr = let
+        marker = fx.tc.hoas.reifyLevel (V.vNe 0 [ ]);
+        wrapped = forall "k" level (_: u marker);
+      in (elab wrapped).codomain.level.tag;
+      expected = "var";
+    };
+    # Whole-pipeline closure: `reifyType` on a `VU` whose level is
+    # `vLevelMax` no longer throws via the spine analysis. The result
+    # is a HOAS `u` node whose level slot carries the reified Level
+    # term verbatim.
+    "reifyType-VU-non-concrete-level" = {
+      expr = let
+        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+        uVal = V.vU Kval;
+      in (fx.tc.elaborate.reifyType uVal)._htag;
+      expected = "U";
+    };
+    "reifyType-VU-non-concrete-level-preserves-max" = {
+      expr = let
+        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+        uVal = V.vU Kval;
+      in (fx.tc.elaborate.reifyType uVal).level._htag;
+      expected = "level-max";
+    };
+
 
     # ===== ListDT tests (datatypeP; parameter A; linear-recursive) =====
 
@@ -1514,8 +1813,8 @@ in {
         onNil = zero;
         onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
         scrut = app L.nil nat;
-        macroApplied = app (app (app (app (app L.elim nat) M) onNil) onCons) scrut;
-        adapterApplied = listElim nat M onNil
+        macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
+        adapterApplied = listElim 0 nat M onNil
           (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
           (nil nat);
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
@@ -1534,8 +1833,8 @@ in {
         onNil = zero;
         onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
         scrut = app (app (app L.cons nat) zero) (app L.nil nat);
-        macroApplied = app (app (app (app (app L.elim nat) M) onNil) onCons) scrut;
-        adapterApplied = listElim nat M zero
+        macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
+        adapterApplied = listElim 0 nat M zero
           (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
           (cons nat zero (nil nat));
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
@@ -1552,11 +1851,11 @@ in {
           ]);
         M = lam "_" (app L.T nat) (_: nat);
         macroAtL = lam "l" (app L.T nat) (l:
-          app (app (app (app (app L.elim nat) M) zero)
+          app (app (app (app (app (L.elim 0) nat) M) zero)
             (lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)))))
             l);
         adapterAtL = lam "l" (listOf nat) (l:
-          listElim nat (lam "_" (listOf nat) (_: nat)) zero
+          listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
             (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
             l);
       in Q.nf [] (elab macroAtL) == Q.nf [] (elab adapterAtL);
@@ -1705,9 +2004,9 @@ in {
         onRight = lam "b" bool (_: zero);
         scrut = app (app (app S.inl nat) bool) zero;
         macroApplied =
-          app (app (app (app (app (app S.elim nat) bool) M) onLeft) onRight) scrut;
+          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
         adapterApplied =
-          sumElim nat bool M onLeft onRight (inl nat bool zero);
+          sumElim 0 nat bool M onLeft onRight (inl nat bool zero);
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
       expected = true;
     };
@@ -1726,9 +2025,9 @@ in {
         onRight = lam "b" bool (_: zero);
         scrut = app (app (app S.inr nat) bool) true_;
         macroApplied =
-          app (app (app (app (app (app S.elim nat) bool) M) onLeft) onRight) scrut;
+          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
         adapterApplied =
-          sumElim nat bool M onLeft onRight (inr nat bool true_);
+          sumElim 0 nat bool M onLeft onRight (inr nat bool true_);
       in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
       expected = true;
     };
@@ -1746,9 +2045,9 @@ in {
         onLeft  = lam "a" nat  (a: a);
         onRight = lam "b" bool (_: zero);
         macroAtS = lam "s" (app (app S.T nat) bool) (s:
-          app (app (app (app (app (app S.elim nat) bool) M) onLeft) onRight) s);
+          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) s);
         adapterAtS = lam "s" (sum nat bool) (s:
-          sumElim nat bool (lam "_" (sum nat bool) (_: nat))
+          sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
             onLeft onRight s);
       in Q.nf [] (elab macroAtS) == Q.nf [] (elab adapterAtS);
       expected = true;
@@ -1859,7 +2158,7 @@ in {
             (con "leaf" [ (field "value" A) ])
             (con "node" [ (recField "left") (recField "right") ])
           ]);
-      in (inferHoas (app Tree.elim nat)).type.tag;
+      in (inferHoas (app (Tree.elim 0) nat)).type.tag;
       expected = "VPi";
     };
     # End-to-end semantic test: count leaves of a 2-leaf tree.
@@ -1880,7 +2179,7 @@ in {
         leafZero = app (app Tree.leaf nat) zero;
         nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
         addTm = lam "m" nat (m: lam "n" nat (n:
-                  ind (lam "_" nat (_: nat))
+                  ind 0 (lam "_" nat (_: nat))
                       n
                       (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
                       m));
@@ -1890,7 +2189,7 @@ in {
                 lam "r" Tnat (_:
                 lam "il" nat (il:
                 lam "ir" nat (ir: app (app addTm il) ir))));
-        countTm = app (app (app (app (app Tree.elim nat) M) sLeaf) sNode) nodeLL;
+        countTm = app (app (app (app (app (Tree.elim 0) nat) M) sLeaf) sNode) nodeLL;
         two = succ (succ zero);
         eqTy = eq nat countTm two;
       in (checkHoas eqTy refl).tag;
@@ -1951,8 +2250,8 @@ in {
         boolP = lam "s" bool (s:
                   boolElim 1 (lam "_" bool (_: u 0)) unit void s);
         macroD = app (app W.D bool) boolP;
-        manualD = descArg bool (s:
-                    descPi (app boolP s) descRet);
+        manualD = descArg 0 bool (s:
+                    descPi 0 (app boolP s) descRet);
       in Q.nf [] (elab macroD) == Q.nf [] (elab manualD);
       expected = true;
     };
@@ -2224,7 +2523,7 @@ in {
         P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
         Pz   = lam "m" nat (_: zero);
         Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
-        elimmed = finElim P Pz Ps two (fzero oneN);
+        elimmed = finElim 0 P Pz Ps two (fzero oneN);
       in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
       expected = true;
     };
@@ -2241,7 +2540,7 @@ in {
         P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
         Pz   = lam "m" nat (_: zero);
         Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
-        elimmed = finElim P Pz Ps two (fsuc oneN (fzero zero));
+        elimmed = finElim 0 P Pz Ps two (fsuc oneN (fzero zero));
       in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
       expected = true;
     };
@@ -2298,7 +2597,7 @@ in {
         Pn  = zero;
         Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
                 lam "ih" nat (ih: succ ih))));
-        elimmed = vecElim nat P Pn Pc zero (vnil nat);
+        elimmed = vecElim 0 nat P Pn Pc zero (vnil nat);
       in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
       expected = true;
     };
@@ -2315,7 +2614,7 @@ in {
         Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
                 lam "ih" nat (ih: succ ih))));
         vs  = vcons nat zero zero (vnil nat);
-        elimmed = vecElim nat P Pn Pc oneN vs;
+        elimmed = vecElim 0 nat P Pn Pc oneN vs;
       in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
       expected = true;
     };

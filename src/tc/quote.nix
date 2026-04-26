@@ -13,6 +13,11 @@ let
   V = fx.tc.value;
   E = fx.tc.eval;
 
+  # Cached `U(0)` term sentinel. Quoting a `VU` whose level is the
+  # `VLevelZero` singleton reduces to this shared term — no per-call
+  # allocation of the `{tag="U"; level={tag="level-zero"}}` pair.
+  mkUZero = T.mkU T.mkLevelZero;
+
   # Level to index conversion: index = depth - level - 1
   lvl2Ix = depth: level: depth - level - 1;
 
@@ -75,11 +80,27 @@ let
     else if t == "VRefl" then T.mkRefl
     else if t == "VFunext" then T.mkFunext
     # Descriptions
-    else if t == "VDesc" then T.mkDesc (quote d v.I)
+    else if t == "VDesc" then
+      # Level-zero fast-path: prelude descriptions live at `desc^0`,
+      # so emit the cached `T.mkLevelZero` sentinel directly instead
+      # of recursively quoting `VLevelZero`.
+      if v.level.tag == "VLevelZero"
+      then T.mkDesc T.mkLevelZero (quote d v.I)
+      else T.mkDesc (quote d v.level) (quote d v.I)
     else if t == "VDescRet" then T.mkDescRet (quote d v.j)
-    else if t == "VDescArg" then T.mkDescArg (quote d v.S) (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
+    # Level-zero fast-path at the new `k` slot: when `v.k` is the
+    # `VLevelZero` singleton, emit the cached `T.mkLevelZero` sentinel
+    # directly — skips a recursive quote descent into the level value.
+    else if t == "VDescArg" then
+      T.mkDescArg
+        (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
+        (quote d v.S)
+        (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
     else if t == "VDescRec" then T.mkDescRec (quote d v.j) (quote d v.D)
-    else if t == "VDescPi" then T.mkDescPi (quote d v.S) (quote d v.f) (quote d v.D)
+    else if t == "VDescPi" then
+      T.mkDescPi
+        (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
+        (quote d v.S) (quote d v.f) (quote d v.D)
     else if t == "VDescPlus" then T.mkDescPlus (quote d v.A) (quote d v.B)
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
     # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
@@ -141,7 +162,13 @@ let
                      (T.mkInr leftTm rightTm
                        (buildInner headTms (T.mkPair acc T.mkRefl)))
               ) baseTm (builtins.genList (x: x) n)
-    else if t == "VU" then T.mkU v.level
+    else if t == "VU" then
+      if v.level.tag == "VLevelZero" then mkUZero
+      else T.mkU (quote d v.level)
+    else if t == "VLevel" then T.mkLevel
+    else if t == "VLevelZero" then T.mkLevelZero
+    else if t == "VLevelSuc" then T.mkLevelSuc (quote d v.pred)
+    else if t == "VLevelMax" then T.mkLevelMax (quote d v.lhs) (quote d v.rhs)
     else if t == "VString" then T.mkString
     else if t == "VInt" then T.mkInt
     else if t == "VFloat" then T.mkFloat
@@ -184,7 +211,7 @@ let
     else if t == "EDescInd" then
       T.mkDescInd (quote d elim.D) (quote d elim.motive) (quote d elim.step) (quote d elim.i) head
     else if t == "EDescElim" then
-      T.mkDescElim (quote d elim.motive) (quote d elim.onRet)
+      T.mkDescElim (quote d elim.k) (quote d elim.motive) (quote d elim.onRet)
         (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi)
         (quote d elim.onPlus) head
     else throw "tc: quoteElim unknown tag '${t}'";
@@ -242,8 +269,29 @@ in mk {
     "quote-tt" = { expr = (quote 0 vTt).tag; expected = "tt"; };
     "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
     "quote-funext" = { expr = (quote 0 V.vFunext).tag; expected = "funext"; };
-    "quote-U0" = { expr = (quote 0 (vU 0)).tag; expected = "U"; };
-    "quote-U0-level" = { expr = (quote 0 (vU 0)).level; expected = 0; };
+    "quote-U0" = { expr = (quote 0 (vU V.vLevelZero)).tag; expected = "U"; };
+    "quote-U0-level" = {
+      expr = (quote 0 (vU V.vLevelZero)).level.tag;
+      expected = "level-zero";
+    };
+    "quote-U1-level-pred" = {
+      expr = (quote 0 (vU (V.vLevelSuc V.vLevelZero))).level.pred.tag;
+      expected = "level-zero";
+    };
+    "quote-U-level-max" = {
+      expr = (quote 0 (vU (V.vLevelMax V.vLevelZero V.vLevelZero))).level.tag;
+      expected = "level-max";
+    };
+    "quote-level" = { expr = (quote 0 V.vLevel).tag; expected = "level"; };
+    "quote-level-zero" = { expr = (quote 0 V.vLevelZero).tag; expected = "level-zero"; };
+    "quote-level-suc" = {
+      expr = (quote 0 (V.vLevelSuc V.vLevelZero)).tag;
+      expected = "level-suc";
+    };
+    "quote-level-max" = {
+      expr = (quote 0 (V.vLevelMax V.vLevelZero V.vLevelZero)).tag;
+      expected = "level-max";
+    };
     "quote-string" = { expr = (quote 0 V.vString).tag; expected = "string"; };
     "quote-int" = { expr = (quote 0 V.vInt).tag; expected = "int"; };
     "quote-float" = { expr = (quote 0 V.vFloat).tag; expected = "float"; };
@@ -317,11 +365,15 @@ in mk {
     };
 
     # -- Descriptions (indexed) --
-    "quote-desc" = { expr = (quote 0 (V.vDesc V.vUnit)).tag; expected = "desc"; };
+    "quote-desc" = { expr = (quote 0 (V.vDesc V.vLevelZero V.vUnit)).tag; expected = "desc"; };
     "quote-desc-ret" = { expr = (quote 0 (V.vDescRet V.vTt)).tag; expected = "desc-ret"; };
     "quote-desc-arg" = {
-      expr = (quote 0 (V.vDescArg V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
+      expr = (quote 0 (V.vDescArg V.vLevelZero V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
       expected = "desc-arg";
+    };
+    "quote-desc-arg-k-zero-fastpath" = {
+      expr = (quote 0 (V.vDescArg V.vLevelZero V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).k.tag;
+      expected = "level-zero";
     };
     "quote-desc-rec" = {
       expr = (quote 0 (V.vDescRec V.vTt (V.vDescRet V.vTt))).tag;
@@ -329,18 +381,23 @@ in mk {
     };
     "quote-desc-pi" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).tag;
       expected = "desc-pi";
     };
     "quote-desc-pi-S" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).S.tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).S.tag;
       expected = "nat";
     };
     "quote-desc-pi-D" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vNat f (V.vDescRet V.vTt))).D.tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).D.tag;
       expected = "desc-ret";
+    };
+    "quote-desc-pi-k-zero-fastpath" = {
+      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
+        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).k.tag;
+      expected = "level-zero";
     };
     "quote-mu" = {
       expr = (quote 0 (V.vMu V.vUnit (V.vDescRet V.vTt) V.vTt)).tag;
@@ -355,17 +412,17 @@ in mk {
       expected = "desc-ind";
     };
     "quote-ne-desc-elim" = {
-      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
+      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vLevelZero V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
       expected = "desc-elim";
     };
 
     # Roundtrip: eval then quote for desc-pi
     "nf-desc-pi" = {
-      expr = (nf [] (T.mkDescPi T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
+      expr = (nf [] (T.mkDescPi T.mkLevelZero T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "desc-pi";
     };
     "nf-desc-pi-roundtrip" = {
-      expr = let D = T.mkDescPi T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
+      expr = let D = T.mkDescPi T.mkLevelZero T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
         nf [] (nf [] D) == nf [] D;
       expected = true;
     };
@@ -431,11 +488,11 @@ in mk {
       # Nested β-redex chain and nested let scaffold converge on the
       # same nf form. Both reduce to `zero`.
       expr = nf [] (T.mkApp
-                      (T.mkApp (T.mkLam "T" (T.mkU 0)
+                      (T.mkApp (T.mkLam "T" (T.mkU T.mkLevelZero)
                                 (T.mkLam "n" T.mkNat (T.mkVar 0)))
                                T.mkNat)
                       T.mkZero)
-          == nf [] (T.mkLet "T" (T.mkU 0) T.mkNat
+          == nf [] (T.mkLet "T" (T.mkU T.mkLevelZero) T.mkNat
                       (T.mkLet "n" T.mkNat T.mkZero (T.mkVar 0)));
       expected = true;
     };
@@ -489,10 +546,10 @@ in mk {
         tt = V.vTt;
         listDescVal = V.vDescPlus
           (V.vDescRet tt)
-          (V.vDescArg V.vNat
+          (V.vDescArg V.vLevelZero V.vNat
             (V.mkClosure [ ] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))));
         leftTy  = V.vEq unit tt tt;
-        rightTy = V.vU 0;
+        rightTy = V.vU V.vLevelZero;
         nilLayer = V.vDescCon listDescVal tt
           (V.vInl leftTy rightTy V.vRefl);
         consLayer = head_: tail_:

@@ -104,8 +104,33 @@ Tm ::=
   | J(A : Tm, a : Tm, P : Tm, pr : Tm, b : Tm, eq : Tm)
     -- J(A, a, P, pr, b, eq)
 
-  -- Universes
-  | U(i : ℕ)                           -- Type_i
+  -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
+  | Level                               -- the Level sort itself, lives at U(0)
+  | LevelZero                           -- 0
+  | LevelSuc(k : Tm)                    -- successor: k+1
+  | LevelMax(a : Tm, b : Tm)            -- join in the level semilattice
+
+  -- Universes (level-indexed, k : Level)
+  | U(k : Tm)                           -- Type_k
+
+  -- Descriptions (universe-polymorphic; see §7.6)
+  | Desc(K : Tm, I : Tm)                -- Desc^K I — descriptions over index type I
+  | DescRet(j : Tm)                     -- ret(j) — leaf returning at index j
+  | DescArg(K : Tm, S : Tm, T : Tm)     -- arg^K S T — non-recursive Π over S : U(K)
+  | DescRec(j : Tm, D : Tm)             -- rec(j) D — recursive child at index j, then D
+  | DescPi(K : Tm, S : Tm, f : Tm, D : Tm)
+                                        -- π^K S f D — recursive Π over S : U(K), indexed by f
+  | DescPlus(A : Tm, B : Tm)            -- A + B — first-class binary coproduct of descriptions
+  | DescElim(K : Tm, P : Tm, onRet : Tm, onArg : Tm,
+             onRec : Tm, onPi : Tm, onPlus : Tm, scrut : Tm)
+                                        -- description recursor at level K
+  | DescInd(D : Tm, motive : Tm, step : Tm, i : Tm, scrut : Tm)
+                                        -- generic μ-induction over D at index i
+
+  -- μ-types (description-induced datatypes)
+  | Mu(I : Tm, D : Tm, i : Tm)          -- μ I D i — the i-th type in the family classified by D
+  | DescCon(D : Tm, i : Tm, payload : Tm)
+                                        -- introduction at index i with payload : interp(D, i)
 
   -- Annotations
   | Ann(t : Tm, A : Tm)                -- (t : A)
@@ -192,8 +217,27 @@ Val ::=
   | VEq(A : Val, a : Val, b : Val)
   | VRefl
 
-  -- Universes
-  | VU(i : ℕ)
+  -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
+  | VLevel                                -- the Level sort itself
+  | VLevelZero                            -- 0
+  | VLevelSuc(pred : Val)                 -- successor
+  | VLevelMax(lhs : Val, rhs : Val)       -- join
+
+  -- Universes (level-indexed, k : VLevel)
+  | VU(k : Val)
+
+  -- Descriptions (universe-polymorphic; see §7.6)
+  | VDesc(K : Val, I : Val)                -- Desc^K I
+  | VDescRet(j : Val)                       -- ret(j)
+  | VDescArg(K : Val, S : Val, T : Closure) -- arg^K S T, T : S → Desc^K I as a closure
+  | VDescRec(j : Val, D : Val)              -- rec(j) D
+  | VDescPi(K : Val, S : Val, f : Val, D : Closure)
+                                            -- π^K S f D, f : S → I as a value, D : S → Desc^K I
+  | VDescPlus(A : Val, B : Val)             -- A + B
+
+  -- μ-types
+  | VMu(I : Val, D : Val, i : Val)          -- μ I D i
+  | VDescCon(D : Val, i : Val, d : Val)     -- introduction at index i with payload d
 
   -- Axiomatized primitive types
   | VString | VInt | VFloat | VAttrs | VPath | VFunction | VAny
@@ -214,6 +258,10 @@ Elim ::=
   | ESumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
   | EJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
   | EStrEq(arg : Val)
+  | EDescElim(K : Val, motive : Val, onRet : Val, onArg : Val,
+              onRec : Val, onPi : Val, onPlus : Val)
+                                            -- carries K so the spine round-trips back to DescElim K
+  | EDescInd(D : Val, motive : Val, step : Val, i : Val)
 
 Closure ::= (env : Env, body : Tm)
 Env     ::= [Val]          -- list indexed by de Bruijn index
@@ -362,12 +410,11 @@ eval(ρ, Tt)    = VTt
 
 ```
 
-Unit has no eliminator in the core. The kernel does NOT implement
-eta for Unit — `conv` does not equate arbitrary Unit-typed neutrals
-with `VTt`. Two distinct neutrals of type Unit are not definitionally
-equal even though they would be in an extensional theory. If eta for
-Unit is needed, the elaborator must reduce to `Tt` before submitting
-to the kernel.
+Unit has no eliminator in the core. The kernel implements ⊤-η: any
+neutral of type ⊤ converts against `VTt` (see §6.3). Sound in the
+type-free conv because conv is always called on values sharing a type;
+if one side is `VTt`, the shared type is ⊤ and the neutral's only
+inhabitant is `Tt`.
 
 ### 4.7 Sum
 
@@ -592,10 +639,26 @@ conv(d, VPi(_, A₁, cl₁), VPi(_, A₂, cl₂)) =
 conv(d, VLam(_, _, cl₁), VLam(_, _, cl₂)) =
   conv(d+1, instantiate(cl₁, fresh(d)), instantiate(cl₂, fresh(d)))
 
+conv(d, VLam(_, _, cl), v) =                                        -- Π-η
+  conv(d+1, instantiate(cl, fresh(d)), vApp(v, fresh(d)))
+  -- only fires when v is not a VLam
+
+conv(d, v, VLam(_, _, cl)) =                                        -- Π-η
+  conv(d+1, vApp(v, fresh(d)), instantiate(cl, fresh(d)))
+  -- only fires when v is not a VLam
+
 conv(d, VSigma(_, A₁, cl₁), VSigma(_, A₂, cl₂)) =
   conv(d, A₁, A₂) ∧ conv(d+1, instantiate(cl₁, fresh(d)), instantiate(cl₂, fresh(d)))
 
 ```
+
+The two Π-η rules fire when exactly one side is a VLam; both sides being
+VLam falls through to the symmetric VLam/VLam rule above. Sound because
+conv is always called on values sharing a type — if one side is VLam,
+that type is VPi, and the other side's only inhabitants up to
+definitional equality are its η-expansions. Termination: each rule
+strictly decreases VLam-depth on the side it fires on, so no nested
+firing can loop.
 
 ### 6.3 Compound values
 
@@ -660,14 +723,68 @@ conv(d, _, _) = false
 ```
 
 Any pair of values not matching the above rules is not definitionally
-equal. **No Pi-eta**: `f` and `λx. f x` are NOT equated; if the
-elaborator needs them equal, it must eta-expand `f` before submitting
-to the kernel. **Σ-eta and ⊤-eta are applied** (see §6.3): a pair
-`⟨a, b⟩` converts against a neutral `x : Σ` by projecting both sides,
-and any neutral of type `⊤` converts against `tt`. Σ-eta and ⊤-eta are
-sound in the type-free conv because conv is always called on two values
-sharing a type — the neutral's shape (Σ or ⊤) is witnessed by the
-non-neutral side.
+equal. **Π-eta, Σ-eta, and ⊤-eta are applied** (see §6.2 for Π-η, §6.3
+for Σ-η and ⊤-η): `f` converts against `λx. f x` under a fresh binder;
+a pair `⟨a, b⟩` converts against a neutral `x : Σ` by projecting both
+sides; and any neutral of type `⊤` converts against `tt`. All three
+η-rules are sound in the type-free conv because conv is always called
+on two values sharing a type — the side carrying the canonical form
+(VLam, VPair, VTt) witnesses the shared type's shape (VPi, VSigma, ⊤),
+and the other side's η-expansion is its only inhabitant up to
+definitional equality.
+
+**Π-η rationale.** Π-η matches the standard semantic models of MLTT
+(PER, presheaf, simplicial sets) and is the η-rule consistent with
+funext: `f ≡ λx. f x` definitionally. Without it, definitional equality
+on Pi-typed values diverges from the equality the surface language
+must reason about — every elaborator that produces a function value
+would have to maintain its own η-normal form before submitting to
+conv. With it, conv handles the canonical-vs-neutral case by descending
+under one binder and continues structurally; subsequent ⊤-η, Σ-η, and
+neutral-vs-neutral rules fire as usual on the body. This composition
+in particular is what closes assemblies that pair a surface
+`descPi k S (λ_:S. tt) D` (a 3-arg combinator that fills the kernel's
+`f : S → ⊤` slot with a constant lambda) against a kernel-reconstructed
+`descPi k S f D` whose `f` is a case-bound variable.
+
+### 6.6 Level conversion (convLevel)
+
+Level expressions form a join-semilattice with `zero` as bottom and
+`max` as join. `convLevel(d, k₁, k₂)` checks definitional equality of
+two Level values modulo the semilattice laws.
+
+**Fast path** (syntactic equality):
+
+```
+convLevel(d, k, k) = true
+
+```
+
+When the same Level value reaches both sides of conv (e.g. a
+description's level is reused unchanged across recursive children),
+the syntactic-equality check skips the normaliser entirely.
+Allocations from re-normalising structurally-identical levels
+dominate hot CHECK loops, so this short-circuit is non-optional.
+
+**Normalisation.** Each Level value is reduced to its canonical form
+before structural comparison:
+
+- `max(k, zero) = max(zero, k) = k` (zero absorption)
+- `max(k, k) = k` (idempotence)
+- `suc(max(a, b)) = max(suc(a), suc(b))` (suc distributes over max)
+- `max` operands are sorted to a canonical order
+
+The canonical form is `max(s₁, …, sₙ)` where each `sᵢ = sucᵐ(zero)`
+or `sᵢ = sucᵐ(VNe(_, _))`, sorted lexicographically. After
+normalisation the comparison is structural:
+
+```
+convLevel(d, k₁, k₂) = (normLevel(k₁) ≡_struct normLevel(k₂))
+
+```
+
+Used by description and universe CHECK rules (§7.6) to verify that
+two level expressions denote the same level.
 
 ---
 
@@ -1145,6 +1262,138 @@ levels are computed structurally during the type formation check
 
 ```
 
+### 7.6 Descriptions: typing rules
+
+Descriptions classify strictly-positive datatype signatures over an
+index type `I`. A description `D : Desc^k I` quantifies over at most
+universe level `k`: `descArg^k S T` requires `S : U(k)`, and
+`descPi^k S f D` requires `S : U(k)` and `f : S → I`. The
+description's level `k` is recovered from the surrounding `μ` (via
+`mu I D i`) at elaboration time; CHECK rules thread `k` through
+recursive children without re-synthesising it ("homogeneity by
+typing", below).
+
+**Notation.** `Desc^k I` is the kernel value `VDesc(K, Î)` where
+`K : Level` (§8.5). `μ I D i` is the kernel value `VMu(Î, D̂, î)`,
+the `i`-th type in the family classified by `D`.
+
+#### 7.6.1 desc-elim INFER (universe-polymorphic)
+
+`descElim^K` recurses over a description at level `K`. The motive,
+each case branch, and the eliminated description must agree on `K`:
+
+```
+                Γ ⊢ K ⇐ Level  ↝  K'    K̂ = eval(Γ.env, K')
+                Γ ⊢ scrut ⇒ scrutTy  ↝  scrut'
+                whnf(scrutTy) = VDesc(K_scrut, Î)
+                convLevel(Γ.depth, K̂, K_scrut) = true     -- K conformance
+                Γ ⊢ P ⇐ VPi(_, VDesc(K̂, Î), ([], U(j)))  ↝  P'
+                P̂ = eval(Γ.env, P')
+                Γ ⊢ onRet ⇐ Π(j:Î). P̂(descRet j)             ↝  onRet'
+                Γ ⊢ onArg ⇐ Π(S:U(K̂)). Π(T: S → Desc^K̂ Î).
+                              (Π(s:S). P̂(T s)) → P̂(descArg K̂ S T)  ↝  onArg'
+                Γ ⊢ onRec ⇐ Π(j:Î). Π(D':Desc^K̂ Î). P̂(D') →
+                              P̂(descRec j D')                       ↝  onRec'
+                Γ ⊢ onPi  ⇐ Π(S:U(K̂)). Π(f: S → Î). Π(D': S → Desc^K̂ Î).
+                              (Π(s:S). P̂(D' s)) → P̂(descPi K̂ S f D')  ↝  onPi'
+                Γ ⊢ onPlus ⇐ Π(A:Desc^K̂ Î). Π(B:Desc^K̂ Î).
+                              P̂(A) → P̂(B) → P̂(descPlus A B)         ↝  onPlus'
+                ──────────────────────
+                Γ ⊢ DescElim(K, P, onRet, onArg, onRec, onPi, onPlus, scrut)
+                  ⇒ vApp(P̂, eval(Γ.env, scrut'))
+
+```
+
+The `K conformance` check (`convLevel(K̂, K_scrut)`) is the
+per-elimination verification that the eliminator's Level argument
+matches the scrutinee description's level. Without it an eliminator
+at `K = zero` could descend into a description containing
+`descArg^1 (U 0) …`, and the case branches' sort binders (typed
+`S : U(K̂) = U(0)`) would be ill-typed against the scrutinee's
+actual `S : U(1)`.
+
+#### 7.6.2 Homogeneity by typing (desc CHECK rules)
+
+When CHECKing a description against `Desc^K I`, recursive sub-checks
+inherit `K` directly from the surrounding type rather than
+synthesising their own. The principle:
+
+> A description's recursive children inhabit the same description type
+> as the parent. Reconstructing `VDesc(K, Î)` per recursive call to
+> thread the type — only to have the recursive CHECK pattern-match
+> it back open — is wasted allocation.
+
+The CHECK rules pass the surrounding type directly:
+
+```
+                whnf(ty) = VDesc(K, Î)
+                Γ ⊢ S ⇐ VU(K)  ↝  S'    Ŝ = eval(Γ.env, S')
+                Γ ⊢ T ⇐ VPi(_, Ŝ, ([], ty))  ↝  T'   -- recursive, same ty
+                ──────────────────────
+                Γ ⊢ DescArg(K, S, T) ⇐ ty  ↝  DescArg(K, S', T')
+
+                whnf(ty) = VDesc(K, Î)
+                Γ ⊢ S ⇐ VU(K)  ↝  S'    Ŝ = eval(Γ.env, S')
+                Γ ⊢ f ⇐ VPi(_, Ŝ, ([], Î))  ↝  f'
+                Γ ⊢ D ⇐ VPi(_, Ŝ, ([], ty))  ↝  D'   -- recursive, same ty
+                ──────────────────────
+                Γ ⊢ DescPi(K, S, f, D) ⇐ ty  ↝  DescPi(K, S', f', D')
+
+                whnf(ty) = VDesc(K, Î)
+                Γ ⊢ A ⇐ ty  ↝  A'                    -- recursive, same ty
+                Γ ⊢ B ⇐ ty  ↝  B'                    -- recursive, same ty
+                ──────────────────────
+                Γ ⊢ DescPlus(A, B) ⇐ ty  ↝  DescPlus(A', B')
+
+                whnf(ty) = VDesc(K, Î)
+                Γ ⊢ j ⇐ Î  ↝  j'
+                Γ ⊢ D ⇐ ty  ↝  D'                    -- recursive, same ty
+                ──────────────────────
+                Γ ⊢ DescRec(j, D) ⇐ ty  ↝  DescRec(j', D')
+
+                whnf(ty) = VDesc(K, Î)
+                Γ ⊢ j ⇐ Î  ↝  j'
+                ──────────────────────
+                Γ ⊢ DescRet(j) ⇐ ty  ↝  DescRet(j')
+
+```
+
+The `K` and `Î` are recovered once at the outermost CHECK, then
+reused unchanged by every recursive sub-check. The rules' written
+shape mirrors the implementation: `ty` (the surrounding `VDesc`
+value) flows into recursive positions verbatim, and `convLevel` on
+the inner description's level reduces to `convLevel(K, K)` — the
+syntactic-equality fast-path of §6.6 fires.
+
+#### 7.6.3 desc-con CHECK with checkDescAtAnyLevel
+
+A `μ I D i` introduction `descCon D i d` checks the description `D`
+against `Desc^K I`, where `K` is recovered from the surrounding
+`μ`'s classifier. Because `μ` at indexed positions is checked
+against `VMu(Î, D̂, î)` whose `D̂` field carries no externally-visible
+level, the CHECK rule infers the level from the type-of-`D̂` at
+elaboration:
+
+```
+                whnf(ty) = VMu(Î, D̂, î)
+                checkDescAtAnyLevel(Γ, D) = (D', K)
+                conv(Γ.depth, eval(Γ.env, D'), D̂) = true
+                Γ ⊢ i ⇐ Î  ↝  i'
+                conv(Γ.depth, eval(Γ.env, i'), î) = true
+                Γ ⊢ payload ⇐ <interp(D̂, î) at level K>  ↝  payload'
+                ──────────────────────
+                Γ ⊢ DescCon(D, i, payload) ⇐ ty
+                  ↝  DescCon(D', i', payload')
+
+```
+
+`checkDescAtAnyLevel(Γ, D)` is the bidirectional bridge: it
+elaborates `D` at the most specific admissible level synthesised
+from `D`'s structure, returning both the elaborated term and the
+inferred `K`. Equivalent to `∃K. Γ ⊢ D ⇐ Desc^K Î`. The bidirectional
+discipline at index positions is preserved: canonical intros (`tt`,
+`zero`, `refl`, …) at the index slot remain checkable-only.
+
 ---
 
 ## 8. Universe Rules
@@ -1218,6 +1467,45 @@ This prevents Girard's paradox (Girard 1972), which requires a type
 that contains itself. Hurkens (1995) gives the compact MLTT rendering
 of the inconsistency proof. Universe stratification is the standard
 fix, and it is why the kernel enforces `level(U(i)) = i + 1`.
+
+### 8.5 Level sort
+
+`Level` is a Tarski-style sort of universe levels, with constructors
+`zero`, `suc`, and `max`. It inhabits the lowest universe:
+
+```
+                ──────────────────────
+                Γ ⊢ Level type  ↝  Level
+
+                ──────────────────────
+                Γ ⊢ Level ⇒ VU(0)  ↝  Level
+
+                ──────────────────────
+                Γ ⊢ LevelZero ⇐ Level  ↝  LevelZero
+
+                Γ ⊢ k ⇐ Level  ↝  k'
+                ──────────────────────
+                Γ ⊢ LevelSuc(k) ⇐ Level  ↝  LevelSuc(k')
+
+                Γ ⊢ a ⇐ Level  ↝  a'
+                Γ ⊢ b ⇐ Level  ↝  b'
+                ──────────────────────
+                Γ ⊢ LevelMax(a, b) ⇐ Level  ↝  LevelMax(a', b')
+
+```
+
+Conversion modulo the semilattice laws (idempotence of `max`, `suc`
+distribution over `max`, zero absorption) is delegated to `convLevel`
+(§6.6); structural conversion on Level values without normalisation
+would be too coarse (e.g. `max(zero, k)` and `k` would not compare
+equal).
+
+The `Level` sort enables predicative universe polymorphism: the
+description type `Desc^k I` and universe `U(k)` quantify over
+arbitrary levels via `Π(k:Level). …`. Rank-1 only — `Level` itself
+has no eliminator, and admitting one would break parametricity over
+the semilattice quotient (any eliminator would be observably
+sensitive to the canonical form chosen by `convLevel`).
 
 ---
 

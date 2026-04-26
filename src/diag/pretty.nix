@@ -163,7 +163,7 @@ let
     else genericDetailLines err.detail;
 
   hintLines = err:
-    if err.hint == null then [] else [ "  hint: ${err.hint}" ];
+    if err.hint == null then [] else [ "  hint: ${err.hint.text}" ];
 
   # Indent every line of a multi-line block by two spaces.
   indent = s:
@@ -340,7 +340,8 @@ in mk {
       expr =
         let
           err = fx.diag.error.mkKernelError {
-            rule = "desc-arg"; msg = "m"; hint = "try using u 0";
+            rule = "desc-arg"; msg = "m";
+            hint = fx.diag.hints.mkHint "universe" "try using u 0";
           };
           ls = lib.splitString "\n" (multiLine err);
         in builtins.any (l: l == "  hint: try using u 0") ls;

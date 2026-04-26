@@ -22,6 +22,23 @@ let
 
   ctx0 = emptyCtx;
   ctx1 = extend ctx0 "x" vNat;
+
+  # Universe level as Nix integer. `checkTypeLevel`/infer can return
+  # a `VLevelMax` whose concrete value only reduces after the Level
+  # normaliser runs, so these helpers normalise first before peeling
+  # the unique `VLevelSuc^n VLevelZero` summand. Every test below
+  # uses concrete levels, so the peel is total.
+  lvlToInt = v:
+    let
+      spine = fx.tc.conv.normLevel v;
+      head = builtins.head spine;
+    in
+      if spine == [ ] then 0
+      else if builtins.length spine == 1 && head.base.kind == "zero"
+      then head.shift
+      else throw "check/tests: non-concrete level (${toString (builtins.length spine)} summands)";
+  typeLvl = r: lvlToInt r.type.level;
+  ctlLvl = r: lvlToInt r.level;
 in {
   scope = {};
   tests = {
@@ -93,22 +110,49 @@ in {
     };
 
     "infer-U0" = {
-      expr = (inferTm ctx0 (T.mkU 0)).type.level;
+      expr = typeLvl (inferTm ctx0 (T.mkU T.mkLevelZero));
       expected = 1;
     };
 
     "infer-U1" = {
-      expr = (inferTm ctx0 (T.mkU 1)).type.level;
+      expr = typeLvl (inferTm ctx0 (T.mkU (T.mkLevelSuc T.mkLevelZero)));
       expected = 2;
     };
 
+    # Level-polymorphic universe: `Π (k : Level). U(k)` is well-formed
+    # and inhabits a universe. The type's level is `max 0 (suc k)` for
+    # a bound `k : Level`; at the outermost Pi this resolves to
+    # `suc k`, which is not a concrete natural, so we check the tag.
+    "infer-pi-level-universe-U" = {
+      expr = (inferTm ctx0
+        (T.mkPi "k" T.mkLevel (T.mkU (T.mkVar 0)))).type.tag;
+      expected = "VU";
+    };
+
+    # `U(max 0 0)` conv-equates with `U(0)` — the Level normaliser
+    # absorbs zeros so the check succeeds.
+    "check-U-max-zero-vs-U0" = {
+      expr = (checkTm ctx0
+        (T.mkU (T.mkLevelMax T.mkLevelZero T.mkLevelZero))
+        (vU (V.vLevelSuc V.vLevelZero))).tag;
+      expected = "U";
+    };
+
+    # `U(suc zero)` and `U(1)` elaborate to conv-equal kernel terms.
+    "check-U-suc-zero-vs-U1" = {
+      expr = (checkTm ctx0
+        (T.mkU (T.mkLevelSuc T.mkLevelZero))
+        (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)))).tag;
+      expected = "U";
+    };
+
     "infer-nat-type" = {
-      expr = (inferTm ctx0 T.mkNat).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkNat);
       expected = 0;
     };
 
     "infer-pi-type" = {
-      expr = (inferTm ctx0 (T.mkPi "x" T.mkNat T.mkNat)).type.level;
+      expr = typeLvl (inferTm ctx0 (T.mkPi "x" T.mkNat T.mkNat));
       expected = 0;
     };
 
@@ -176,8 +220,8 @@ in {
     # Dependent function: Lam(A, U(0), Lam(x, Var(0), Var(0)))
     "check-poly-id" = {
       expr = let
-        ty = vPi "A" (vU 0) (mkClosure [] (T.mkPi "x" (T.mkVar 0) (T.mkVar 1)));
-        tm = T.mkLam "A" (T.mkU 0) (T.mkLam "x" (T.mkVar 0) (T.mkVar 0));
+        ty = vPi "A" (vU V.vLevelZero) (mkClosure [] (T.mkPi "x" (T.mkVar 0) (T.mkVar 1)));
+        tm = T.mkLam "A" (T.mkU T.mkLevelZero) (T.mkLam "x" (T.mkVar 0) (T.mkVar 0));
       in (checkTm ctx0 tm ty).tag;
       expected = "lam";
     };
@@ -218,7 +262,7 @@ in {
 
     # Universe violation: U(0) : U(0) rejected.
     "reject-U0-U0" = {
-      expr = (checkTm ctx0 (T.mkU 0) (vU 0)) ? error;
+      expr = (checkTm ctx0 (T.mkU T.mkLevelZero) (vU V.vLevelZero)) ? error;
       expected = true;
     };
 
@@ -269,8 +313,8 @@ in {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkAnn
           (T.mkLam "y" T.mkNat
-            (T.mkLam "e" T.mkNat (T.mkU 0)))
-          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU 1))))
+            (T.mkLam "e" T.mkNat (T.mkU T.mkLevelZero)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU (T.mkLevelSuc T.mkLevelZero)))))
         T.mkZero
         T.mkZero
         T.mkRefl)) ? error;
@@ -280,8 +324,8 @@ in {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkAnn
           (T.mkLam "y" T.mkNat
-            (T.mkLam "e" T.mkNat (T.mkU 0)))
-          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU 1))))
+            (T.mkLam "e" T.mkNat (T.mkU T.mkLevelZero)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkNat (T.mkU (T.mkLevelSuc T.mkLevelZero)))))
         T.mkZero
         T.mkZero
         T.mkRefl)).msg;
@@ -294,18 +338,18 @@ in {
     };
 
     "check-cumulativity" = {
-      expr = (checkTm ctx0 T.mkNat (vU 1)).tag;
+      expr = (checkTm ctx0 T.mkNat (vU (V.vLevelSuc V.vLevelZero))).tag;
       expected = "nat";
     };
 
     "check-U0-in-U1" = {
-      expr = (checkTm ctx0 (T.mkU 0) (vU 1)).tag;
+      expr = (checkTm ctx0 (T.mkU T.mkLevelZero) (vU (V.vLevelSuc V.vLevelZero))).tag;
       expected = "U";
     };
 
     # Downward cumulativity rejected: U(1):U(2), not convertible to U(0).
     "reject-U1-in-U0" = {
-      expr = (checkTm ctx0 (T.mkU 1) (vU 0)) ? error;
+      expr = (checkTm ctx0 (T.mkU (T.mkLevelSuc T.mkLevelZero)) (vU V.vLevelZero)) ? error;
       expected = true;
     };
 
@@ -368,7 +412,7 @@ in {
     };
 
     "checktype-fallback" = {
-      expr = (runCheck (checkType ctx0 (T.mkAnn T.mkNat (T.mkU 0)))).tag;
+      expr = (runCheck (checkType ctx0 (T.mkAnn T.mkNat (T.mkU T.mkLevelZero)))).tag;
       expected = "ann";
     };
 
@@ -397,7 +441,7 @@ in {
     "reject-j-motive-wrong-outer-domain" = {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkLam "y" T.mkUnit
-          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU 0)))
+          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU T.mkLevelZero)))
         T.mkZero T.mkZero T.mkRefl)) ? error;
       expected = true;
     };
@@ -469,7 +513,7 @@ in {
       expr = let
         nested = builtins.foldl' (acc: _: T.mkPi "x" T.mkNat acc)
           T.mkNat (builtins.genList (x: x) 500);
-      in (inferTm ctx0 nested).type.level;
+      in typeLvl (inferTm ctx0 nested);
       expected = 0;
     };
 
@@ -554,32 +598,32 @@ in {
       expected = true;
     };
     "roundtrip-U" = {
-      expr = Q.nf [] (Q.nf [] (T.mkU 0)) == Q.nf [] (T.mkU 0);
+      expr = Q.nf [] (Q.nf [] (T.mkU T.mkLevelZero)) == Q.nf [] (T.mkU T.mkLevelZero);
       expected = true;
     };
     # Large elim: motive returns higher universe.
     "large-elim-nat" = {
       expr = (inferTm ctx0 (T.mkNatElim
-        (T.mkLam "n" T.mkNat (T.mkU 0))
+        (T.mkLam "n" T.mkNat (T.mkU T.mkLevelZero))
         T.mkNat
-        (T.mkLam "k" T.mkNat (T.mkLam "ih" (T.mkU 0) (T.mkVar 0)))
+        (T.mkLam "k" T.mkNat (T.mkLam "ih" (T.mkU T.mkLevelZero) (T.mkVar 0)))
         T.mkZero)).type.tag;
       expected = "VU";
     };
 
     "large-elim-list" = {
       expr = (inferTm ctx0 (T.mkListElim T.mkNat
-        (T.mkLam "l" (T.mkList T.mkNat) (T.mkU 0))
+        (T.mkLam "l" (T.mkList T.mkNat) (T.mkU T.mkLevelZero))
         T.mkNat
         (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
-          (T.mkLam "ih" (T.mkU 0) (T.mkVar 0))))
+          (T.mkLam "ih" (T.mkU T.mkLevelZero) (T.mkVar 0))))
         (T.mkNil T.mkNat))).type.tag;
       expected = "VU";
     };
 
     "large-elim-sum" = {
       expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkUnit
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) (T.mkU 0))
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) (T.mkU T.mkLevelZero))
         (T.mkLam "x" T.mkNat T.mkNat)
         (T.mkLam "b" T.mkUnit T.mkUnit)
         (T.mkInl T.mkNat T.mkUnit T.mkZero))).type.tag;
@@ -589,7 +633,7 @@ in {
     "large-elim-j" = {
       expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
         (T.mkLam "y" T.mkNat
-          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU 0)))
+          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU T.mkLevelZero)))
         T.mkNat
         T.mkZero
         T.mkRefl)).type.tag;
@@ -622,70 +666,70 @@ in {
     # Universe level soundness: derivations, not post-hoc inspection.
     "level-pi-with-type-var" = {
       expr = let
-        ctxB = extend ctx0 "B" (vU 1);
-      in (inferTm ctxB (T.mkPi "x" T.mkNat (T.mkVar 1))).type.level;
+        ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
+      in typeLvl (inferTm ctxB (T.mkPi "x" T.mkNat (T.mkVar 1)));
       expected = 1;
     };
 
     "level-sigma-with-type-var" = {
       expr = let
-        ctxB = extend ctx0 "B" (vU 1);
-      in (inferTm ctxB (T.mkSigma "x" T.mkNat (T.mkVar 1))).type.level;
+        ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
+      in typeLvl (inferTm ctxB (T.mkSigma "x" T.mkNat (T.mkVar 1)));
       expected = 1;
     };
 
     "level-nested-pi" = {
       expr = let
-        ctxA = extend ctx0 "A" (vU 2);
-      in (inferTm ctxA (T.mkPi "x" T.mkNat (T.mkPi "y" T.mkNat (T.mkVar 2)))).type.level;
+        ctxA = extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)));
+      in typeLvl (inferTm ctxA (T.mkPi "x" T.mkNat (T.mkPi "y" T.mkNat (T.mkVar 2))));
       expected = 2;
     };
 
     "level-app-returning-universe" = {
       expr = let
-        fTy = vPi "x" vNat (mkClosure [] (T.mkU 1));
+        fTy = vPi "x" vNat (mkClosure [] (T.mkU (T.mkLevelSuc T.mkLevelZero)));
         ctxF = extend ctx0 "F" fTy;
-      in (inferTm ctxF (T.mkPi "y" (T.mkApp (T.mkVar 0) T.mkZero) T.mkNat)).type.level;
+      in typeLvl (inferTm ctxF (T.mkPi "y" (T.mkApp (T.mkVar 0) T.mkZero) T.mkNat));
       expected = 1;
     };
 
     "level-sigma-mixed-vars" = {
       expr = let
-        ctxAB = extend (extend ctx0 "A" (vU 2)) "B" (vU 1);
-      in (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1))).type.level;
+        ctxAB = extend (extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)))) "B" (vU (V.vLevelSuc V.vLevelZero));
+      in typeLvl (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1)));
       expected = 2;
     };
 
     "checkTypeLevel-string" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkString)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkString));
       expected = 0;
     };
     "checkTypeLevel-int" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkInt)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkInt));
       expected = 0;
     };
     "checkTypeLevel-float" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkFloat)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkFloat));
       expected = 0;
     };
     "checkTypeLevel-attrs" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkAttrs)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkAttrs));
       expected = 0;
     };
     "checkTypeLevel-path" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkPath)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkPath));
       expected = 0;
     };
     "checkTypeLevel-function" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkFunction)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkFunction));
       expected = 0;
     };
     "checkTypeLevel-any" = {
-      expr = (runCheck (checkTypeLevel ctx0 T.mkAny)).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 T.mkAny));
       expected = 0;
     };
     "checkTypeLevel-eq" = {
-      expr = (runCheck (checkTypeLevel ctx0 (T.mkEq T.mkNat T.mkZero T.mkZero))).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 (T.mkEq T.mkNat T.mkZero T.mkZero)));
       expected = 0;
     };
 
@@ -748,31 +792,31 @@ in {
     };
 
     "infer-string-type" = {
-      expr = (inferTm ctx0 T.mkString).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkString);
       expected = 0;
     };
     "infer-int-type" = {
-      expr = (inferTm ctx0 T.mkInt).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkInt);
       expected = 0;
     };
     "infer-float-type" = {
-      expr = (inferTm ctx0 T.mkFloat).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkFloat);
       expected = 0;
     };
     "infer-attrs-type" = {
-      expr = (inferTm ctx0 T.mkAttrs).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkAttrs);
       expected = 0;
     };
     "infer-path-type" = {
-      expr = (inferTm ctx0 T.mkPath).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkPath);
       expected = 0;
     };
     "infer-function-type" = {
-      expr = (inferTm ctx0 T.mkFunction).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkFunction);
       expected = 0;
     };
     "infer-any-type" = {
-      expr = (inferTm ctx0 T.mkAny).type.level;
+      expr = typeLvl (inferTm ctx0 T.mkAny);
       expected = 0;
     };
 
@@ -841,60 +885,86 @@ in {
     # Bare canonical forms (tt/zero/refl) have no infer rule — bidirectional
     # discipline requires annotation at synthesis positions. Every test below
     # that embeds a bare `tt` at a j/i index position wraps its enclosing
-    # description in `T.mkAnn _ (T.mkDesc T.mkUnit)` so synthesis recovers I=Unit,
+    # description in `T.mkAnn _ (T.mkDesc T.mkLevelZero T.mkUnit)` so synthesis recovers I=Unit,
     # and checking cascades through the CHECK rules (which accept bare tt via
     # the tt-check rule at check.nix:123).
     "infer-desc-ret" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))).type.tag;
+        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-desc-arg" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescArg T.mkNat (T.mkDescRet T.mkTt))
-                 (T.mkDesc T.mkUnit))).type.tag;
+        (T.mkAnn (T.mkDescArg T.mkLevelZero T.mkNat (T.mkDescRet T.mkTt))
+                 (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
       expected = "VDesc";
+    };
+
+    # Universe-polymorphic `arg` — `descArg 1 (u 0) (λ_. ret tt)` has
+    # `S = u 0 : U(1)`, the level slot drives the S sort check to
+    # `U(1)`. Acceptance criterion for Phase 11 Step 3.
+    "infer-desc-arg-level-one" = {
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) (T.mkDescRet T.mkTt))
+                 (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))).type.tag;
+      expected = "VDesc";
+    };
+    "check-desc-arg-level-one" = {
+      expr = (checkTm ctx0
+        (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) (T.mkDescRet T.mkTt))
+        (V.vDesc (V.vLevelSuc V.vLevelZero) vUnit)).tag;
+      expected = "desc-arg";
     };
 
     "infer-desc-rec" = {
       expr = (inferTm ctx0
         (T.mkAnn (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))
-                 (T.mkDesc T.mkUnit))).type.tag;
+                 (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-desc-pi" = {
       # f : Nat → Unit; all synthesis positions fold through the ann's check mode.
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescPi T.mkNat
+        (T.mkAnn (T.mkDescPi T.mkLevelZero T.mkNat
                    (T.mkLam "_" T.mkNat T.mkTt)
                    (T.mkDescRet T.mkTt))
-                 (T.mkDesc T.mkUnit))).type.tag;
+                 (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
+      expected = "VDesc";
+    };
+
+    # Universe-polymorphic `pi` — `descPi 1 (u 0) f (ret tt)`.
+    "infer-desc-pi-level-one" = {
+      expr = (inferTm ctx0
+        (T.mkAnn (T.mkDescPi (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero)
+                   (T.mkLam "_" (T.mkU T.mkLevelZero) T.mkTt)
+                   (T.mkDescRet T.mkTt))
+                 (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))).type.tag;
       expected = "VDesc";
     };
 
     "infer-mu" = {
       # infer on mu routes through checkTypeLevel, which infers tm.D;
       # ann-wrap D so I=Unit is recoverable.
-      expr = (inferTm ctx0
+      expr = typeLvl (inferTm ctx0
         (T.mkMu T.mkUnit
-          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
-          T.mkTt)).type.level;
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit))
+          T.mkTt));
       expected = 0;
     };
 
     "checktype-desc" = {
-      expr = (runCheck (checkTypeLevel ctx0 (T.mkDesc T.mkUnit))).level;
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0 (T.mkDesc T.mkLevelZero T.mkUnit)));
       expected = 1;
     };
 
     "checktype-mu" = {
       # checkTypeLevel's mu branch infers tm.D; ann-wrap D to carry I=Unit.
-      expr = (runCheck (checkTypeLevel ctx0
+      expr = ctlLvl (runCheck (checkTypeLevel ctx0
         (T.mkMu T.mkUnit
-          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
-          T.mkTt))).level;
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit))
+          T.mkTt)));
       expected = 0;
     };
 
@@ -902,7 +972,7 @@ in {
       # Ret-leaf payload is mkRefl (witnesses Eq I j i; here Eq Unit tt tt by Unit-η).
       expr = (inferTm ctx0
         (T.mkDescCon
-          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit))
           T.mkTt T.mkRefl)).type.tag;
       expected = "VMu";
     };
@@ -918,30 +988,98 @@ in {
       # Indexed on-cases: onRet (1 binder j:I), onArg (3: S T ih), onRec (3: j D ih),
       # onPi (4: S f D ih), onPlus (4: A B ihA ihB). Each body returns a
       # U-typed term for large elim. scrut is ann-wrapped so I is recoverable
-      # in infer mode.
-      expr = (inferTm ctx0 (T.mkDescElim
-        (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
+      # in infer mode. Leading `0` pins the descElim's `k` slot to level zero,
+      # so onArg / onPi bind their sort `S` at `U(0)`.
+      expr = (inferTm ctx0 (T.mkDescElim T.mkLevelZero
+        (T.mkLam "_" (T.mkDesc T.mkLevelZero T.mkUnit) (T.mkU T.mkLevelZero))
         (T.mkLam "j" T.mkUnit T.mkUnit)
-        (T.mkLam "S" (T.mkU 0) (T.mkLam "T"
-          (T.mkPi "_" (T.mkVar 0) (T.mkDesc T.mkUnit))
-          (T.mkLam "ih" (T.mkPi "s" (T.mkVar 1) (T.mkU 0)) T.mkUnit)))
-        (T.mkLam "j" T.mkUnit (T.mkLam "D" (T.mkDesc T.mkUnit)
-          (T.mkLam "ih" (T.mkU 0) T.mkUnit)))
-        (T.mkLam "S" (T.mkU 0) (T.mkLam "f"
+        (T.mkLam "S" (T.mkU T.mkLevelZero) (T.mkLam "T"
+          (T.mkPi "_" (T.mkVar 0) (T.mkDesc T.mkLevelZero T.mkUnit))
+          (T.mkLam "ih" (T.mkPi "s" (T.mkVar 1) (T.mkU T.mkLevelZero)) T.mkUnit)))
+        (T.mkLam "j" T.mkUnit (T.mkLam "D" (T.mkDesc T.mkLevelZero T.mkUnit)
+          (T.mkLam "ih" (T.mkU T.mkLevelZero) T.mkUnit)))
+        (T.mkLam "S" (T.mkU T.mkLevelZero) (T.mkLam "f"
           (T.mkPi "_" (T.mkVar 0) T.mkUnit)
-          (T.mkLam "D" (T.mkDesc T.mkUnit)
-            (T.mkLam "ih" (T.mkU 0) T.mkUnit))))
-        (T.mkLam "A" (T.mkDesc T.mkUnit) (T.mkLam "B" (T.mkDesc T.mkUnit)
-          (T.mkLam "ihA" (T.mkU 0) (T.mkLam "ihB" (T.mkU 0) T.mkUnit))))
-        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit)))).type.tag;
+          (T.mkLam "D" (T.mkDesc T.mkLevelZero T.mkUnit)
+            (T.mkLam "ih" (T.mkU T.mkLevelZero) T.mkUnit))))
+        (T.mkLam "A" (T.mkDesc T.mkLevelZero T.mkUnit) (T.mkLam "B" (T.mkDesc T.mkLevelZero T.mkUnit)
+          (T.mkLam "ihA" (T.mkU T.mkLevelZero) (T.mkLam "ihB" (T.mkU T.mkLevelZero) T.mkUnit))))
+        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit)))).type.tag;
       expected = "VU";
     };
+
+    # `descElim 1 …` accepts arg / pi cases whose sort `S` lives at
+    # `U(1)` and a scrutinee at `Desc^1 ⊤`. The K slot must match the
+    # scrutinee's description level (`convLevel K sTy.level`), so
+    # `motive`, `onRec`, `onPi`, `onPlus`, and the recursive
+    # description annotations all use `Desc^1 ⊤`. The `descRet`
+    # leaf carries no level slot, so it inhabits `Desc^1 ⊤` directly.
+    "infer-desc-elim-at-level-one" = {
+      expr = (inferTm ctx0 (T.mkDescElim (T.mkLevelSuc T.mkLevelZero)
+        (T.mkLam "_" (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit) (T.mkU T.mkLevelZero))
+        (T.mkLam "j" T.mkUnit T.mkNat)
+        (T.mkLam "S" (T.mkU (T.mkLevelSuc T.mkLevelZero)) (T.mkLam "T"
+          (T.mkPi "_" (T.mkVar 0) (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))
+          (T.mkLam "ih" (T.mkPi "s" (T.mkVar 1) T.mkNat) T.mkNat)))
+        (T.mkLam "j" T.mkUnit (T.mkLam "D" (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit)
+          (T.mkLam "ih" T.mkNat T.mkNat)))
+        (T.mkLam "S" (T.mkU (T.mkLevelSuc T.mkLevelZero)) (T.mkLam "f"
+          (T.mkPi "_" (T.mkVar 0) T.mkUnit)
+          (T.mkLam "D" (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit)
+            (T.mkLam "ih" T.mkNat T.mkNat))))
+        (T.mkLam "A" (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit) (T.mkLam "B" (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit)
+          (T.mkLam "ihA" T.mkNat (T.mkLam "ihB" T.mkNat T.mkNat))))
+        (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit)))).type.tag;
+      expected = "VU";
+    };
+
+    # At `descElim 1 …` the `onArg` case must bind its sort `S` at
+    # `U(1)` to satisfy `paTy : Π(S:U(1)). …`. A user `onArg` whose lam
+    # body uses `S` at the wrong universe — emitting `S` itself as a
+    # value of type `U(0)` — fails the motive-application return type
+    # check (motive yields `U(0)` but the body ascribes `S : U(0)`,
+    # which doesn't conv against `U(0)`'s shape after substitution).
+    # Probe: an `onArg` body that returns `S` directly (treating S as
+    # a U(0) value) at K=1 is rejected; at K=0 the same body succeeds
+    # because S then *is* a U(0) value. Both K instances use a
+    # scrutinee at `Desc^K ⊤` so the K-vs-sTy.level conformance check
+    # accepts and the rejection isolates the body's universe error.
+    "desc-elim-at-level-one-onArg-wrong-universe-rejected" = {
+      expr =
+        let
+          mkElim = K:
+            T.mkDescElim K
+              (T.mkLam "_" (T.mkDesc K T.mkUnit) (T.mkU T.mkLevelZero))
+              (T.mkLam "j" T.mkUnit T.mkUnit)
+              (T.mkLam "S" (T.mkU K) (T.mkLam "T"
+                (T.mkPi "_" (T.mkVar 0) (T.mkDesc K T.mkUnit))
+                (T.mkLam "ih"
+                  (T.mkPi "s" (T.mkVar 1) (T.mkU T.mkLevelZero))
+                  (T.mkVar 2))))
+              (T.mkLam "j" T.mkUnit (T.mkLam "D" (T.mkDesc K T.mkUnit)
+                (T.mkLam "ih" (T.mkU T.mkLevelZero) T.mkUnit)))
+              (T.mkLam "S" (T.mkU K) (T.mkLam "f"
+                (T.mkPi "_" (T.mkVar 0) T.mkUnit)
+                (T.mkLam "D" (T.mkDesc K T.mkUnit)
+                  (T.mkLam "ih" (T.mkU T.mkLevelZero) T.mkUnit))))
+              (T.mkLam "A" (T.mkDesc K T.mkUnit) (T.mkLam "B" (T.mkDesc K T.mkUnit)
+                (T.mkLam "ihA" (T.mkU T.mkLevelZero) (T.mkLam "ihB" (T.mkU T.mkLevelZero) T.mkUnit))))
+              (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc K T.mkUnit));
+          atZero = inferTm ctx0 (mkElim T.mkLevelZero);
+          atOne  = inferTm ctx0 (mkElim (T.mkLevelSuc T.mkLevelZero));
+        in {
+          zeroOk = !(atZero ? error);
+          oneRejected = atOne ? error;
+        };
+      expected = { zeroOk = true; oneRejected = true; };
+    };
+
 
     "reject-desc-con-bad-payload" = {
       # Ret-leaf payload type is Eq Unit tt tt; mkZero : Nat fails to inhabit it.
       expr = (inferTm ctx0
         (T.mkDescCon
-          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit))
+          (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit))
           T.mkTt T.mkZero)) ? error;
       expected = true;
     };
@@ -949,7 +1087,7 @@ in {
     "reject-desc-arg-bad-S" = {
       # mkZero is not a type; check S : U(0) fails before reaching the body.
       expr = (inferTm ctx0
-        (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt))) ? error;
+        (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt))) ? error;
       expected = true;
     };
 
@@ -960,7 +1098,7 @@ in {
     "reject-desc-arg-bad-S-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt));
+          (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgSort";
     };
@@ -972,14 +1110,14 @@ in {
     "reject-desc-arg-bad-body-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkNat (T.mkVar 0));
+          (T.mkDescArg T.mkLevelZero T.mkNat (T.mkVar 0));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgBody";
     };
     "reject-desc-arg-bad-body-rule" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkNat (T.mkVar 0));
+          (T.mkDescArg T.mkLevelZero T.mkNat (T.mkVar 0));
         in r.error.detail.rule;
       expected = "desc-arg";
     };
@@ -989,8 +1127,19 @@ in {
     "reject-desc-arg-check-bad-S-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt))
-          (V.vDesc vUnit));
+          (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc V.vLevelZero vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DArgSort";
+    };
+
+    # Bad level: `descArg mkZero S T` feeds a Nat into the level slot.
+    # The infer rule routes through `bindP P.DArgLevel` on the non-
+    # fast-path branch, so the blame lives at `arg.k`.
+    "reject-desc-arg-bad-k-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) T.mkZero (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgSort";
     };
@@ -1013,7 +1162,7 @@ in {
       expr =
         let r = runCheck (self.check ctx0
           (T.mkDescRet T.mkZero)
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DRetIndex";
     };
@@ -1046,7 +1195,7 @@ in {
       expr =
         let r = runCheck (self.check ctx0
           (T.mkDescRec T.mkZero (T.mkDescRet T.mkTt))
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DRecIndex";
     };
@@ -1057,7 +1206,7 @@ in {
       expr =
         let r = runCheck (self.check ctx0
           (T.mkDescRec T.mkTt T.mkZero)
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DRecTail";
     };
@@ -1067,7 +1216,7 @@ in {
     "reject-desc-pi-infer-bad-S-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkZero
+          (T.mkDescPi T.mkLevelZero T.mkZero
             (T.mkLam "_" T.mkNat T.mkTt)
             (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
@@ -1079,7 +1228,7 @@ in {
     "reject-desc-pi-infer-bad-f-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkNat T.mkTt (T.mkDescRet T.mkTt));
+          (T.mkDescPi T.mkLevelZero T.mkNat T.mkTt (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
     };
@@ -1090,14 +1239,14 @@ in {
     "reject-desc-pi-infer-f-not-pi-position" = {
       expr =
         let ctx' = extend ctx0 "_" vNat;
-            r = inferTm ctx' (T.mkDescPi T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
     };
     "reject-desc-pi-infer-f-not-pi-rule" = {
       expr =
         let ctx' = extend ctx0 "_" vNat;
-            r = inferTm ctx' (T.mkDescPi T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
         in r.error.detail.rule;
       expected = "desc-pi";
     };
@@ -1107,7 +1256,7 @@ in {
     "reject-desc-pi-infer-f-domain-mismatch-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkNat
+          (T.mkDescPi T.mkLevelZero T.mkNat
             (T.mkAnn (T.mkLam "_" T.mkUnit T.mkTt)
                      (T.mkPi "_" T.mkUnit T.mkUnit))
             (T.mkDescRet T.mkTt));
@@ -1119,10 +1268,10 @@ in {
     "reject-desc-pi-check-bad-S-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkZero
+          (T.mkDescPi T.mkLevelZero T.mkZero
             (T.mkLam "_" T.mkNat T.mkTt)
             (T.mkDescRet T.mkTt))
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiSort";
     };
@@ -1132,8 +1281,8 @@ in {
     "reject-desc-pi-check-bad-f-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkUnit T.mkZero (T.mkDescRet T.mkTt))
-          (V.vDesc vUnit));
+          (T.mkDescPi T.mkLevelZero T.mkUnit T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
     };
@@ -1142,8 +1291,8 @@ in {
     "reject-desc-pi-check-bad-D-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkUnit (T.mkLam "_" T.mkUnit T.mkTt) T.mkZero)
-          (V.vDesc vUnit));
+          (T.mkDescPi T.mkLevelZero T.mkUnit (T.mkLam "_" T.mkUnit T.mkTt) T.mkZero)
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiBody";
     };
@@ -1179,7 +1328,7 @@ in {
     # B is malformed (mkZero). `bindP P.DPlusR` tags the right summand.
     "reject-desc-plus-infer-bad-B-position" = {
       expr =
-        let A = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit);
+        let A = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit);
             r = inferTm ctx0 (T.mkDescPlus A T.mkZero);
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPlusR";
@@ -1190,7 +1339,7 @@ in {
       expr =
         let r = runCheck (self.check ctx0
           (T.mkDescPlus T.mkZero (T.mkDescRet T.mkTt))
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPlusL";
     };
@@ -1200,7 +1349,7 @@ in {
       expr =
         let r = runCheck (self.check ctx0
           (T.mkDescPlus (T.mkDescRet T.mkTt) T.mkZero)
-          (V.vDesc vUnit));
+          (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPlusR";
     };
@@ -1209,7 +1358,7 @@ in {
       # Motive: (i:I) → μD i → U. Step: Π(i:I). Π(d:Eq Unit tt i). Π(_:Unit). Nat.
       # desc-ind infers tm.D; ann-wrap D so I=Unit is recoverable.
       expr = let
-        D = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit);
+        D = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkLevelZero T.mkUnit);
       in (inferTm ctx0 (T.mkDescInd D
         (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))
         (T.mkLam "i" T.mkUnit
@@ -1230,12 +1379,38 @@ in {
       in Q.quote 0 r.type == T.funextTypeTm;
       expected = true;
     };
-    "infer-funext-type-level" = {
+    # `funext`'s type is `Π(j:Level). Π(k:Level). T(j,k)`; its universe-
+    # level expression mentions the bound levels, so `typeLvl` cannot
+    # peel it to a concrete int. Witness heterogeneous universe-
+    # polymorphism through the outer binders' names and domain tags
+    # instead.
+    "infer-funext-type-binds-level-j" = {
       expr = let
         r = inferTm ctx0 T.mkFunext;
         tyTm = Q.quote 0 r.type;
-      in (inferTm ctx0 tyTm).type.level;
-      expected = 1;
+      in tyTm.name;
+      expected = "j";
+    };
+    "infer-funext-type-outer-domain-is-level" = {
+      expr = let
+        r = inferTm ctx0 T.mkFunext;
+        tyTm = Q.quote 0 r.type;
+      in tyTm.domain.tag;
+      expected = "level";
+    };
+    "infer-funext-type-binds-level-k" = {
+      expr = let
+        r = inferTm ctx0 T.mkFunext;
+        tyTm = Q.quote 0 r.type;
+      in tyTm.codomain.name;
+      expected = "k";
+    };
+    "infer-funext-type-second-domain-is-level" = {
+      expr = let
+        r = inferTm ctx0 T.mkFunext;
+        tyTm = Q.quote 0 r.type;
+      in tyTm.codomain.domain.tag;
+      expected = "level";
     };
     "check-funext-against-its-type" = {
       expr = let
@@ -1244,16 +1419,20 @@ in {
       expected = "funext";
     };
     "check-funext-reflexive-application" = {
+      # Apply at j=0, k=0 to specialise the heterogeneous Π chain to
+      # the homogeneous-at-U(0) shape; the remaining 5-arg spine
+      # inhabits the resulting `Eq (Π(a:Nat). Nat) f f` reflexively
+      # (pointwise = λ_. refl).
       expr = let
         A = T.mkNat;
-        Bty = T.mkPi "_" A (T.mkU 0);
+        Bty = T.mkPi "_" A (T.mkU T.mkLevelZero);
         B = T.mkAnn (T.mkLam "_" A A) Bty;
         fTy = T.mkPi "a" A A;
         f = T.mkAnn (T.mkLam "_" A T.mkZero) fTy;
         ptTy = T.mkPi "a" A (T.mkEq A T.mkZero T.mkZero);
         pointwise = T.mkAnn (T.mkLam "_" A T.mkRefl) ptTy;
-        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
-          T.mkFunext A) B) f) f) pointwise;
+        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
+          T.mkFunext (T.mkLevelLit 0)) (T.mkLevelLit 0)) A) B) f) f) pointwise;
         expectedTy = V.vEq
           (V.vPi "a" V.vNat (V.mkClosure [] A))
           (fx.tc.eval.eval [] f)
@@ -1261,14 +1440,65 @@ in {
       in (checkTm ctx0 term expectedTy).tag;
       expected = "app";
     };
+    "check-funext-application-at-level-one" = {
+      # Homogeneous specialisation at j=k=1: A = U(0), B = λ_. A (so B
+      # has type A → U(1) and `B a = U(0)`), f = g = λ_. Nat (the
+      # constant function picking out a type in U(0)), pointwise = λ_.
+      # refl. Exercises the j- and k-binder substitution paths inside
+      # the cached `funextTypeVal`.
+      expr = let
+        A = T.mkU T.mkLevelZero;
+        Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
+        B = T.mkAnn (T.mkLam "_" A A) Bty;
+        fTy = T.mkPi "_" A A;
+        f = T.mkAnn (T.mkLam "_" A T.mkNat) fTy;
+        ptTy = T.mkPi "_" A (T.mkEq A T.mkNat T.mkNat);
+        pointwise = T.mkAnn (T.mkLam "_" A T.mkRefl) ptTy;
+        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
+          T.mkFunext (T.mkLevelLit 1)) (T.mkLevelLit 1)) A) B) f) f) pointwise;
+        fVal = fx.tc.eval.eval [] f;
+        expectedTy = V.vEq
+          (V.vPi "_" (V.vU V.vLevelZero) (V.mkClosure [] A))
+          fVal
+          fVal;
+      in (checkTm ctx0 term expectedTy).tag;
+      expected = "app";
+    };
+    "check-funext-application-heterogeneous-j0-k1" = {
+      # Heterogeneous specialisation at j=0, k=1: A = Nat (at U(0)), B
+      # = λ_. desc(⊤) (so B has type Nat → U(1) and `B a = desc ⊤`), f
+      # = g = λ_. descRet(tt) (a constant function picking out a
+      # description), pointwise = λ_. refl. The codomain B sits at a
+      # STRICTLY HIGHER universe than A — exercises the decoupled
+      # j ≠ k substitution path through the cached `funextTypeVal`.
+      expr = let
+        A = T.mkNat;
+        descTy = T.mkDesc T.mkLevelZero T.mkUnit;
+        Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
+        B = T.mkAnn (T.mkLam "_" A descTy) Bty;
+        fTy = T.mkPi "_" A descTy;
+        f = T.mkAnn (T.mkLam "_" A (T.mkDescRet T.mkTt)) fTy;
+        ptTy = T.mkPi "_" A
+          (T.mkEq descTy (T.mkDescRet T.mkTt) (T.mkDescRet T.mkTt));
+        pointwise = T.mkAnn (T.mkLam "_" A T.mkRefl) ptTy;
+        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
+          T.mkFunext (T.mkLevelLit 0)) (T.mkLevelLit 1)) A) B) f) f) pointwise;
+        fVal = fx.tc.eval.eval [] f;
+        expectedTy = V.vEq
+          (V.vPi "_" V.vNat (V.mkClosure [] descTy))
+          fVal
+          fVal;
+      in (checkTm ctx0 term expectedTy).tag;
+      expected = "app";
+    };
 
     "infer-desc-ind-arg" = {
-      # D = arg Nat (ret tt) — body is body-Tm under implicit s:Nat, not a lambda.
+      # D = arg 0 Nat (ret tt) — body is body-Tm under implicit s:Nat, not a lambda.
       # interp at i = Σ(s:Nat). Eq Unit tt i (Var 1 = i from inside the Sigma snd).
       # All = Unit (allOnRet collapses to Unit at ret-leaf for I=⊤).
       expr = let
-        D = T.mkAnn (T.mkDescArg T.mkNat (T.mkDescRet T.mkTt))
-                    (T.mkDesc T.mkUnit);
+        D = T.mkAnn (T.mkDescArg T.mkLevelZero T.mkNat (T.mkDescRet T.mkTt))
+                    (T.mkDesc T.mkLevelZero T.mkUnit);
       in (inferTm ctx0 (T.mkDescInd D
         (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))
         (T.mkLam "i" T.mkUnit

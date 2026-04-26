@@ -35,8 +35,10 @@
 # On success these return exactly what the trusted core returned
 # (elaborated Tm for checkD, {term;type;} for inferD). On failure they
 # return `{ error; msg; expected; got; hint; surface; }` — the flat
-# fields from `runCheck`, plus `hint` (String | null) and `surface`
-# (the SourceMap's hoas payload at the blame chain's leaf, or null).
+# fields from `runCheck`, plus `hint` (Hint | null, where a Hint is
+# `{ _tag="Hint"; text; category; severity; docLink; }`) and
+# `surface` (the SourceMap's hoas payload at the blame chain's leaf,
+# or null).
 { self, fx, ... }:
 
 let
@@ -141,7 +143,7 @@ in {
         expected = null;
       };
       # An error wrapped under DArgSort with a universe-mismatch-shaped
-      # detail resolves to the DArgSort/universe-mismatch hint.
+      # detail resolves to the DArgSort/universe-mismatch Hint record.
       "runCheckD-hint-resolves-for-DArgSort-universe-mismatch" = {
         expr =
           let
@@ -157,7 +159,8 @@ in {
               expected = err.detail.expected;
               got = err.detail.got;
             };
-          in builtins.isString (H.resolve fakeR.error);
+            h = H.resolve fakeR.error;
+          in builtins.isAttrs h && h._tag == "Hint";
         expected = true;
       };
 

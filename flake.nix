@@ -42,14 +42,32 @@
             inherit pkgs lib nix-effects;
           };
 
-          # Benchmark harness. Invoked directly from $out/bin; see
-          # CONTRIBUTING.md §"Performance gate" for the full CLI surface.
+          # Bench harness. Binary stem is `nix-effects-bench-*`; the
+          # `apps` outputs below alias these for `nix run .#bench-* -- …`.
           bench-run              = nix-effects-with-pkgs.bench.runner.run;
           bench-compare          = nix-effects-with-pkgs.bench.runner.compare;
           bench-gate             = nix-effects-with-pkgs.bench.runner.gate;
           bench-calibrate        = nix-effects-with-pkgs.bench.runner.calibrate;
           bench-open-regressions = nix-effects-with-pkgs.bench.runner.open-regressions;
           bench-lint-workloads   = nix-effects-with-pkgs.bench.runner.lint-workloads;
+        });
+
+      # `nix run .#bench-* -- <args>`. The wrapped binary embeds the
+      # flake-locked Nix; alloc counters match the bench-gate baseline.
+      apps = forAllSystems (system:
+        let
+          benchPkgs = self.packages.${system};
+          mkApp = pkg: stem: {
+            type = "app";
+            program = "${pkg}/bin/nix-effects-bench-${stem}";
+          };
+        in {
+          bench-run              = mkApp benchPkgs.bench-run              "run";
+          bench-compare          = mkApp benchPkgs.bench-compare          "compare";
+          bench-gate             = mkApp benchPkgs.bench-gate             "gate";
+          bench-calibrate        = mkApp benchPkgs.bench-calibrate        "calibrate";
+          bench-open-regressions = mkApp benchPkgs.bench-open-regressions "open-regressions";
+          bench-lint-workloads   = mkApp benchPkgs.bench-lint-workloads   "lint-workloads";
         });
 
       checks = forAllSystems (system:

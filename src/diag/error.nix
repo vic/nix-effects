@@ -4,7 +4,9 @@
 #   - layer    : Layer         (Kernel | Generic)
 #   - detail   : Detail        (one unified record; fields optional)
 #   - msg      : String        (short human-readable summary)
-#   - hint     : String | null (resolved later by hints.nix)
+#   - hint     : Hint | null   (resolved later by hints.nix;
+#                                Hint = { _tag = "Hint"; text;
+#                                         category; severity; docLink; })
 #   - children : [{ position : Position; error : Error }]
 #
 # A leaf is an Error with `children = []`. A non-empty children list marks
@@ -30,11 +32,16 @@
 # kernel consumes `Position` constants and pure combinators from here
 # (via fx.diag); this module itself depends only on `api` and the sibling
 # positions module.
-{ fx, api, ... }:
+{ lib, fx, api, ... }:
 
 let
   inherit (api) mk;
   inherit (fx.diag.positions) DArgSort DArgBody Field Elem;
+
+  # Stack-safety switchover point for chain-walking combinators. Direct
+  # recursion up to this depth, then a genericClosure worklist that
+  # WHNF-forces the next node. Matches pretty.nix / hints.nix.
+  fastPathLimit = 500;
 
   # -- Layer ADT constants.
   # Tagged attrsets with `_tag = "Layer"` mark these as terminal values
@@ -127,6 +134,64 @@ let
       children = parent.children ++ [{ inherit position; error = child; }];
     };
 
+  # -- setLeafHint: walk the single-child chain to the leaf and
+  # overwrite its `hint` field. Returns a structurally-equivalent tree
+  # with all path edges preserved. If the chain endpoint is a
+  # branching node (children count > 1), returns the tree unchanged —
+  # sibling-specific hint attachment is the caller's responsibility.
+  #
+  # Stack-safe: direct recursion up to fastPathLimit frames, then a
+  # genericClosure worklist that WHNF-forces the next node. Required
+  # because checkHoas feeds error trees up to the full kernel descent
+  # depth into this function.
+  #
+  # Implementation: (1) walk to the endpoint, collecting positions;
+  # (2) rebuild the chain by folding nestUnder over the positions in
+  # reverse. Step (2) is O(n) attrset allocation and uses no recursion.
+  splitChainFast = acc: err: depth:
+    if builtins.length err.children != 1
+    then { positions = acc; endpoint = err; }
+    else if depth >= fastPathLimit
+    then splitChainSlow acc err
+    else
+      let edge = builtins.elemAt err.children 0;
+      in splitChainFast (acc ++ [edge.position]) edge.error (depth + 1);
+
+  splitChainSlow = acc0: err0:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; _acc = acc0; _err = err0; }];
+        operator = st:
+          if builtins.length st._err.children != 1 then []
+          else
+            let
+              edge = builtins.elemAt st._err.children 0;
+              nextErr = edge.error;
+              newAcc = st._acc ++ [edge.position];
+            in [{
+              key = builtins.seq nextErr
+                      (builtins.seq newAcc (st.key + 1));
+              _acc = newAcc;
+              _err = nextErr;
+            }];
+      };
+      final = lib.last steps;
+    in { positions = final._acc; endpoint = final._err; };
+
+  setLeafHint = hint: err:
+    let
+      split = splitChainFast [] err 0;
+      endpoint = split.endpoint;
+      newLeaf =
+        if builtins.length endpoint.children == 0
+        then endpoint // { inherit hint; }
+        else endpoint;
+      n = builtins.length split.positions;
+      reversed = builtins.genList
+        (i: builtins.elemAt split.positions (n - 1 - i)) n;
+    in builtins.foldl' (inner: pos: nestUnder pos inner)
+         newLeaf reversed;
+
   # -- Predicates.
   isLayer = x:
     builtins.isAttrs x
@@ -174,7 +239,7 @@ in mk {
       Kernel Generic
       mkDetail
       mkKernelError mkGenericError
-      nestUnder addChild
+      nestUnder addChild setLeafHint
       isError isLayer eq;
   };
   tests = {
@@ -248,9 +313,10 @@ in mk {
     };
     "kernel-error-hint-passthrough" = {
       expr = (mkKernelError {
-        rule = "r"; msg = "m"; hint = "try using u 0";
+        rule = "r"; msg = "m";
+        hint = fx.diag.hints.mkHint "universe" "try using u 0";
       }).hint;
-      expected = "try using u 0";
+      expected = fx.diag.hints.mkHint "universe" "try using u 0";
     };
     "kernel-error-is-error" = {
       expr = isError (mkKernelError { rule = "r"; msg = "m"; });
@@ -445,6 +511,83 @@ in mk {
             c = mkGenericError { value = "a"; msg = "inner"; };
         in (addChild (Field "n") root c).msg;
       expected = "outer message";
+    };
+
+    # -- setLeafHint --
+    "setLeafHint-mutates-leaf-hint" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "universe" "try U(0)";
+          leaf = mkKernelError { rule = "r"; msg = "m"; };
+          tree = setLeafHint h leaf;
+        in tree.hint;
+      expected = fx.diag.hints.mkHint "universe" "try U(0)";
+    };
+    "setLeafHint-walks-to-deep-leaf" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "description" "hint text";
+          leaf = mkKernelError { rule = "r"; msg = "m"; };
+          chain = nestUnder DArgBody (nestUnder DArgSort leaf);
+          withHint = setLeafHint h chain;
+          walk = e:
+            if builtins.length e.children == 0 then e
+            else walk (builtins.elemAt e.children 0).error;
+        in (walk withHint).hint;
+      expected = fx.diag.hints.mkHint "description" "hint text";
+    };
+    "setLeafHint-preserves-path" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "description" "h";
+          leaf = mkKernelError { rule = "r"; msg = "m"; };
+          chain = nestUnder DArgBody (nestUnder DArgSort leaf);
+          withHint = setLeafHint h chain;
+        in [
+          (builtins.elemAt withHint.children 0).position
+          (builtins.elemAt
+            (builtins.elemAt withHint.children 0).error.children 0).position
+        ];
+      expected = [ DArgBody DArgSort ];
+    };
+    "setLeafHint-preserves-leaf-detail" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "description" "h";
+          leaf = mkKernelError {
+            rule = "desc-arg"; msg = "type mismatch";
+            expected = { tag = "U"; level = 0; };
+            got      = { tag = "U"; level = 3; };
+          };
+          withHint = setLeafHint h leaf;
+        in withHint.detail.rule;
+      expected = "desc-arg";
+    };
+    "setLeafHint-no-op-on-branching-endpoint" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "inhabitation" "ignored";
+          root = mkGenericError { value = {}; msg = "m"; };
+          c1 = mkGenericError { value = "a"; msg = "m"; };
+          c2 = mkGenericError { value = "b"; msg = "m"; };
+          tree = addChild (Field "s") (addChild (Field "n") root c1) c2;
+          result = setLeafHint h tree;
+        in result.hint;   # root was never a leaf; nothing changed.
+      expected = null;
+    };
+    "setLeafHint-stack-safe-on-1000-deep-chain" = {
+      expr =
+        let
+          h    = fx.diag.hints.mkHint "universe" "deep hint";
+          leaf = mkKernelError { rule = "r"; msg = "m"; };
+          deep = builtins.foldl' (acc: _: nestUnder DArgSort acc) leaf
+                   (builtins.genList (x: x) 1000);
+          withHint = setLeafHint h deep;
+          walk = e:
+            if builtins.length e.children == 0 then e
+            else walk (builtins.elemAt e.children 0).error;
+        in (walk withHint).hint;
+      expected = fx.diag.hints.mkHint "universe" "deep hint";
     };
 
     # -- Sibling branching (Record-shaped case). --

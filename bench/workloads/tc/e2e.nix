@@ -9,20 +9,44 @@ let
 
   catApp = import ../../../apps/category-theory { inherit fx; };
 
+  # Tests whose forcing has multi-second cost — bidirectional CHECK
+  # against the polymorphic iso, full Q.nf round-trip through
+  # descElim/descInd, etc. Excluded from quick-tier suite workloads
+  # (which would otherwise run for >>5s) and gated separately by
+  # `tc-test-suite-heavy` in the heavy tier. Keys match
+  # `fx.tests.tc.results` (i.e. `<module>.<test-name>`).
+  heavyProofTestNames = [
+    "hoas.test-iso-type-checks-polymorphic"
+    "hoas.test-iso-at-level-zero-instantiates"
+    "hoas.test-iso-at-level-one-instantiates"
+    "hoas.test-iso-at-level-two-instantiates"
+    "hoas.test-iso-roundtrip-natDesc-k0"
+    "hoas.test-iso-roundtrip-listDesc-bool-k0"
+    "hoas.test-iso-roundtrip-sumDesc-nat-bool-k0"
+    "hoas.test-iso-toFrom-natDesc-typechecks"
+  ];
+
+  results = fx.tests.tc.results;
+
+  # Quick-tier-safe key set: full results minus the heavy proof tests.
+  quickKeys = builtins.filter
+    (k: !(builtins.elem k heavyProofTestNames))
+    (builtins.attrNames results);
+
   # Group tc test results by source-module prefix (`module.test-name`).
+  # Operates on `quickKeys` so quick-tier per-module workloads exclude
+  # the heavy proof tests.
   resultsByModule =
     let
-      results = fx.tests.tc.results;
-      keys = builtins.attrNames results;
       moduleOf = k: builtins.head (builtins.split "\\." k);
       modules = builtins.foldl'
         (acc: k:
           let m = moduleOf k;
           in if builtins.elem m acc then acc else acc ++ [ m ])
         [ ]
-        keys;
+        quickKeys;
       keysFor = m:
-        builtins.filter (k: moduleOf k == m) keys;
+        builtins.filter (k: moduleOf k == m) quickKeys;
       passedAll = m:
         builtins.all
           (k: results.${k}.pass or false)
@@ -32,12 +56,23 @@ let
 
 in {
   # Full tc test suite — single boolean across ~1000 inline + integration
-  # tests. Forces every kernel-tested path covered by `src/tc/**/tests.nix`.
-  tc-test-suite-full = fx.tests.tc.allPass;
+  # tests, EXCLUDING `heavyProofTestNames`. Forces every kernel-tested
+  # path covered by `src/tc/**/tests.nix` that fits the quick-tier
+  # budget; the excluded heavy tests are gated by `tc-test-suite-heavy`.
+  tc-test-suite-full =
+    builtins.all (k: results.${k}.pass or false) quickKeys;
 
   # Per-module breakdown of the same suite. Each entry is a Bool over
-  # the tests prefixed with `<module>.` in `fx.tests.tc.results`.
+  # the quick-tier-safe tests prefixed with `<module>.` in
+  # `fx.tests.tc.results` — heavy proof tests are excluded.
   tc-test-suite-per-module = resultsByModule;
+
+  # Heavy proof-test suite, gated separately in the heavy tier. Each
+  # test is multi-second cost; aggregating them here keeps the quick
+  # suite's per-workload budget intact without losing regression
+  # coverage on the iso bundle.
+  tc-test-suite-heavy =
+    builtins.all (k: results.${k}.pass or false) heavyProofTestNames;
 
   # Full check of the category-theory app — 24 algebraic-law proofs
   # (`compComm`, `natAddMonoid`, `natCategory`, monoid laws, etc.),

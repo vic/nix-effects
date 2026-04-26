@@ -79,7 +79,7 @@ let
         else self.plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
       interpTm = dHoas:
         elaborate depth
-          (self.interpHoas I dHoas muFam targetIdxVal);
+          (self.interpHoasAt 0 I dHoas muFam targetIdxVal);
     in {
       lTms = builtins.genList (k: interpTm (builtins.elemAt descsHoas k)) n;
       rTms = builtins.genList (k: interpTm (spineAfter (k + 1)))
@@ -316,6 +316,45 @@ let
         in buildLayer layer.nonRecArgs acc
       ) baseTm (builtins.genList (x: x) nLayers);
 
+  # Universe-level coercion. The HOAS surface accepts a level slot in
+  # one of two encodings:
+  #   - a Nix-meta `Int` (concrete level, shimmed via `T.mkLevelLit`);
+  #   - a HOAS Level term — either an `_htag`-tagged construct
+  #     (`level`/`levelZero`/`levelSuc`/`levelMax`) or a `_hoas`-tagged
+  #     marker for a bound `forall "k" level …` variable. Both route
+  #     through `elaborate`, whose first dispatch already handles
+  #     markers (→ `T.mkVar`) and `_htag` nodes uniformly.
+  # Anything else is a typed error at this boundary so a leaked marker
+  # or random attrset fails loudly here rather than corrupting the
+  # kernel tree downstream.
+  elaborateLevel = depth: lvl:
+    if builtins.isInt lvl then T.mkLevelLit lvl
+    else if self.isMarker lvl || (builtins.isAttrs lvl && lvl ? _htag)
+    then elaborate depth lvl
+    else throw "hoas.elaborateLevel: expected Int or HOAS Level; got ${
+      if builtins.isAttrs lvl
+      then "attrset with keys: ${builtins.concatStringsSep ", " (builtins.attrNames lvl)}"
+      else builtins.typeOf lvl
+    }";
+
+  # Inverse of `elaborateLevel`: a kernel Level Value back to a HOAS
+  # Level node. Concrete chains map to the `levelZero`/`levelSuc`
+  # combinators; `vLevelMax` reifies recursively; a neutral `vNe`
+  # (a bound Level variable in the surrounding context) reifies to a
+  # marker at the same de Bruijn level so that re-elaborating the
+  # produced HOAS under a context that re-introduces the binder yields
+  # back the same kernel Var. Levels are not function-typed, so any
+  # `vNe` with a non-empty spine is a kernel invariant violation.
+  reifyLevel = lv:
+    if lv.tag == "VLevelZero" then self.levelZero
+    else if lv.tag == "VLevelSuc" then self.levelSuc (self.reifyLevel lv.pred)
+    else if lv.tag == "VLevelMax" then
+      self.levelMax (self.reifyLevel lv.lhs) (self.reifyLevel lv.rhs)
+    else if lv.tag == "VNe" then
+      if lv.spine == [ ] then self.mkMarker lv.level
+      else throw "hoas.reifyLevel: VNe Level with non-empty spine — Levels are not function-typed"
+    else throw "hoas.reifyLevel: unsupported Level value tag '${lv.tag or "?"}'";
+
   # Elaboration: HOAS tree → de Bruijn Tm.
   #
   # elaborate : Int → HoasTree → Tm
@@ -351,13 +390,21 @@ let
     else if t == "path" then T.mkPath
     else if t == "function" then T.mkFunction
     else if t == "any" then T.mkAny
-    else if t == "U" then T.mkU h.level
+    else if t == "U" then T.mkU (elaborateLevel depth h.level)
+    # Level sort and its three constructors. `level` is a type former
+    # (`U(0)`-inhabiting); the constructors build a Level Tm that
+    # ultimately lands in a `U`/`desc-arg`/`desc-pi` level slot.
+    else if t == "level" then T.mkLevel
+    else if t == "level-zero" then T.mkLevelZero
+    else if t == "level-suc" then T.mkLevelSuc (elaborateLevel depth h.pred)
+    else if t == "level-max" then
+      T.mkLevelMax (elaborateLevel depth h.lhs) (elaborateLevel depth h.rhs)
     # `listOf elem` is the description-based fixpoint `mu (listDesc elem) tt`.
     else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
     # `sum l r` is the description-based fixpoint `mu (sumDesc l r) tt`.
     else if t == "sum" then T.mkMu T.mkUnit (elaborate depth (self.sumDesc h.left h.right)) T.mkTt
     # Kernel-primitive `sum-prim`/`inl-prim`/`inr-prim` — used by
-    # `interpHoas`/`allHoas` for `plus`'s interpretation, matching
+    # `interpHoasAt`/`allHoasAt` for `plus`'s interpretation, matching
     # `eval/desc.nix`'s kernel `Sum` output token-for-token so conv between
     # HOAS-side and value-side `interp` values succeeds on plus descriptions.
     else if t == "sum-prim" then T.mkSum (elaborate depth h.L) (elaborate depth h.R)
@@ -495,7 +542,7 @@ let
         dHoas = self.listDesc h.elem;
         tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ self.descRet
-                   (self.descArg h.elem (_: self.descRec self.descRet)) ];
+                   (self.descArg 0 h.elem (_: self.descRec self.descRet)) ];
       in
       T.mkDescCon (elaborate depth dHoas) T.mkTt
         (encodeTagTm tags.lTms tags.rTms 0 2 T.mkRefl)
@@ -520,7 +567,7 @@ let
         dTm = elaborate depth dHoas;
         tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ self.descRet
-                   (self.descArg h.elem (_: self.descRec self.descRet)) ];
+                   (self.descArg 0 h.elem (_: self.descRec self.descRet)) ];
       in builtins.foldl' (acc: i:
         let node = (builtins.elemAt chain (n - 1 - i)).val; in
         T.mkDescCon dTm T.mkTt
@@ -538,8 +585,8 @@ let
       let
         dHoas = self.sumDesc h.left h.right;
         tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ (self.descArg h.left  (_: self.descRet))
-                   (self.descArg h.right (_: self.descRet)) ];
+                 [ (self.descArg 0 h.left  (_: self.descRet))
+                   (self.descArg 0 h.right (_: self.descRet)) ];
       in
       T.mkDescCon (elaborate depth dHoas) T.mkTt
         (encodeTagTm tags.lTms tags.rTms 0 2
@@ -550,8 +597,8 @@ let
       let
         dHoas = self.sumDesc h.left h.right;
         tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ (self.descArg h.left  (_: self.descRet))
-                   (self.descArg h.right (_: self.descRet)) ];
+                 [ (self.descArg 0 h.left  (_: self.descRet))
+                   (self.descArg 0 h.right (_: self.descRet)) ];
       in
       T.mkDescCon (elaborate depth dHoas) T.mkTt
         (encodeTagTm tags.lTms tags.rTms 1 2
@@ -578,15 +625,19 @@ let
     else if t == "snd" then T.mkSnd (elaborate depth h.pair)
 
     # -- Descriptions --
-    else if t == "desc" then T.mkDesc (elaborate depth h.I)
+    else if t == "desc" then
+      T.mkDesc (if h ? k then elaborateLevel depth h.k else T.mkLevelZero)
+        (elaborate depth h.I)
     else if t == "desc-ret" then T.mkDescRet (elaborate depth h.j)
     else if t == "desc-arg" then
       let marker = self.mkMarker depth;
-      in T.mkDescArg (elaborate depth h.S) (elaborate (depth + 1) (h.body marker))
+      in T.mkDescArg (elaborateLevel depth h.k) (elaborate depth h.S)
+           (elaborate (depth + 1) (h.body marker))
     else if t == "desc-rec" then
       T.mkDescRec (elaborate depth h.j) (elaborate depth h.D)
     else if t == "desc-pi" then
-      T.mkDescPi (elaborate depth h.S) (elaborate depth h.f) (elaborate depth h.D)
+      T.mkDescPi (elaborateLevel depth h.k) (elaborate depth h.S) (elaborate depth h.f)
+        (elaborate depth h.D)
     else if t == "desc-plus" then
       T.mkDescPlus (elaborate depth h.A) (elaborate depth h.B)
     else if t == "mu" then
@@ -597,7 +648,8 @@ let
       T.mkDescInd (elaborate depth h.D) (elaborate depth h.motive)
         (elaborate depth h.step) (elaborate depth h.i) (elaborate depth h.scrut)
     else if t == "desc-elim" then
-      T.mkDescElim (elaborate depth h.motive) (elaborate depth h.onRet)
+      T.mkDescElim (elaborateLevel depth h.k)
+        (elaborate depth h.motive) (elaborate depth h.onRet)
         (elaborate depth h.onArg) (elaborate depth h.onRec)
         (elaborate depth h.onPi) (elaborate depth h.onPlus) (elaborate depth h.scrut)
 
@@ -622,7 +674,7 @@ let
     else throw "hoas.elaborate: unknown tag: ${t}";
 in {
   scope = {
-    inherit elaborate;
+    inherit elaborate reifyLevel;
 
     # Elaborate from depth 0.
     elab = elaborate 0;
@@ -646,10 +698,20 @@ in {
         r   = CH.runCheck (CH.check CH.emptyCtx tm vTy);
       in
         if builtins.isAttrs r && r ? error
-        then r // {
-          hint    = fx.diag.hints.resolve r.error;
-          surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
-        }
+        then
+          let
+            hint = fx.diag.hints.resolve r.error;
+            # Embed the hint into the leaf so Pr.multiLine renders it
+            # inline. When resolution misses, the error tree is
+            # unchanged.
+            errorTree =
+              if hint == null then r.error
+              else fx.diag.error.setLeafHint hint r.error;
+          in r // {
+            error   = errorTree;
+            inherit hint;
+            surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
+          }
         else r;
 
     inferHoas = hoasTm:
@@ -658,10 +720,17 @@ in {
         r  = CH.runCheck (CH.infer CH.emptyCtx tm);
       in
         if builtins.isAttrs r && r ? error
-        then r // {
-          hint    = fx.diag.hints.resolve r.error;
-          surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
-        }
+        then
+          let
+            hint = fx.diag.hints.resolve r.error;
+            errorTree =
+              if hint == null then r.error
+              else fx.diag.error.setLeafHint hint r.error;
+          in r // {
+            error   = errorTree;
+            inherit hint;
+            surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
+          }
         else r;
 
     # Natural number literal helper — build S^n(zero).

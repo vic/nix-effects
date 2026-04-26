@@ -57,7 +57,7 @@ let
       name=""
       runs=5
       warmup=1
-      tier="quick,standard"
+      tier="quick"
       filter=""
 
       usage() {

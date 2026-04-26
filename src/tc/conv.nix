@@ -3,8 +3,9 @@
 # conv : Depth -> Val -> Val -> Bool
 # Checks definitional equality of two values at binding depth d.
 # Purely structural on normalized values — no type information used.
-# Sigma-eta (⟨fst x, snd x⟩ ≡ x) and unit-eta (x ≡ tt for x : ⊤) ARE
-# implemented; Pi-eta is NOT. Cumulativity handled in check.nix Sub rule only.
+# Sigma-eta (⟨fst x, snd x⟩ ≡ x), unit-eta (x ≡ tt for x : ⊤), and
+# Pi-eta (f ≡ λx. f x) are all implemented. Cumulativity handled in
+# check.nix Sub rule only.
 # Pure function — zero effect system imports.
 #
 # Spec reference: kernel-spec.md §6
@@ -14,6 +15,124 @@ let
   inherit (api) mk;
   V = fx.tc.value;
   E = fx.tc.eval;
+
+  # -- Level normaliser --
+  #
+  # A Level value reduces to a canonical spine
+  #   max (suc^{n_1} b_1) … (suc^{n_k} b_k)
+  # where each b_i is either `zero` or a free variable (`VNe`), and
+  # duplicates of the same base retain only the max shift. Zero
+  # absorption: the `zero` base is dropped when a variable base with
+  # non-negative shift dominates it. `suc (max a b) = max (suc a) (suc b)`
+  # is realised by threading the pending `shift` outward during flatten.
+  #
+  # Two Level values are conv-equal iff their canonical spines agree
+  # element-wise.
+  levelZeroBase = { kind = "zero"; };
+  mkVarBase = v: { kind = "var"; level = v.level; spine = v.spine; };
+  baseEq = a: b: a == b;
+
+  # Flatten nested max into a list of leaf summands, threading a
+  # pending outer shift (number of `suc` layers) down to each leaf.
+  flattenLevel = shift: v:
+    if v.tag == "VLevelMax" then
+      flattenLevel shift v.lhs ++ flattenLevel shift v.rhs
+    else if v.tag == "VLevelSuc" then
+      flattenLevel (shift + 1) v.pred
+    else if v.tag == "VLevelZero" then
+      [{ base = levelZeroBase; inherit shift; }]
+    else if v.tag == "VNe" then
+      [{ base = mkVarBase v; inherit shift; }]
+    else throw "tc: level: unexpected tag '${v.tag}' in flattenLevel";
+
+  # Dedup adjacent-or-scattered same-base summands, keeping the max
+  # shift. O(N²) but N is small (bounded by Level expression depth).
+  dedupLevel = summands:
+    builtins.foldl' (acc: s:
+      if builtins.any (y: baseEq y.base s.base) acc
+      then map (y:
+        if baseEq y.base s.base
+        then { base = y.base; shift = if y.shift > s.shift then y.shift else s.shift; }
+        else y) acc
+      else acc ++ [ s ]
+    ) [] summands;
+
+  # Total order on bases — zero sorts last so it can be absorbed when
+  # any variable summand survives. Variables compare by de Bruijn
+  # level; equal-level variables (differ only in spine) stay adjacent,
+  # which dedup already handles.
+  baseCmp = a: b:
+    if baseEq a b then 0
+    else if a.kind == "zero" then 1
+    else if b.kind == "zero" then -1
+    else if a.level < b.level then -1
+    else if a.level > b.level then 1
+    else 0;
+
+  # Drop a `{ base = zero; shift = n }` summand when some variable
+  # summand `{ base = var; shift = m }` dominates it (i.e. `m ≥ n`).
+  # Sound because every level variable inhabits ℕ, so
+  # `var + m ≥ m ≥ n = 0 + n`. Keep `[{zero, n}]` alone (that IS the
+  # zero-shifted-n Level value).
+  dropZeroIfDominated = merged:
+    if builtins.length merged <= 1 then merged
+    else
+      let
+        varShifts = map (s: s.shift)
+          (builtins.filter (s: s.base.kind != "zero") merged);
+        maxVarShift = if varShifts == []
+          then 0
+          else builtins.foldl' (a: b: if a > b then a else b)
+                              (builtins.head varShifts)
+                              (builtins.tail varShifts);
+        kept = builtins.filter
+          (s: !(s.base.kind == "zero"
+                && varShifts != []
+                && s.shift <= maxVarShift)) merged;
+      in if kept == [] then merged else kept;
+
+  normLevel = v:
+    let
+      flat = flattenLevel 0 v;
+      deduped = dedupLevel flat;
+      sorted = builtins.sort (a: b: baseCmp a.base b.base < 0) deduped;
+    in dropZeroIfDominated sorted;
+
+  summandEq = x: y: x.shift == y.shift && baseEq x.base y.base;
+
+  # Syntactic-equality fast-path: two Level values that are the same
+  # Nix value are trivially conv-equal. Skips the normLevel allocations
+  # in the common case where both sides come from the same elaboration
+  # site (e.g. `kVal` and `ty.level` for a homogeneous-L description).
+  # Sound: Nix `==` on values is structural; structural equality of
+  # Level values implies their canonical spines agree element-wise.
+  convLevel = a: b:
+    a == b
+    || (let sa = normLevel a; sb = normLevel b; in
+        builtins.length sa == builtins.length sb
+        && builtins.all (i: summandEq (builtins.elemAt sa i) (builtins.elemAt sb i))
+             (builtins.genList (i: i) (builtins.length sa)));
+
+  # Pi-eta η-reduction detector. Recognises closures of shape `λx. f x`
+  # where `f` does not reference the bound `x` — i.e., body is
+  # `app (var k) (var 0)` with `k ≥ 1`, so `f = closure.env[k-1]` (env
+  # entries shift de Bruijn indices by one under the binder). Returns
+  # the η-reduced function value `f`, or `null` if the closure is not
+  # such an expansion. Lets the Pi-eta conv rule short-circuit
+  # `conv (d+1) (vApp f freshVar) (vApp v2 freshVar)` to `conv d f v2`,
+  # saving a `freshVar`+`vApp`+`instantiate` triple and one binder
+  # layer of recursion per fire. Sound by congruence of conv under
+  # vApp: `conv d f v2 ⇒ conv (d+1) (vApp f w) (vApp v2 w)` for any w.
+  etaReducedFn = closure:
+    let body = closure.body; in
+    if body.tag == "app"
+       && body.fn.tag == "var"
+       && body.fn.idx >= 1
+       && body.arg.tag == "var"
+       && body.arg.idx == 0
+       && (body.fn.idx - 1) < (builtins.length closure.env)
+    then builtins.elemAt closure.env (body.fn.idx - 1)
+    else null;
 
   # -- Main conversion checker --
   # Returns true if v1 and v2 are definitionally equal at depth d.
@@ -27,7 +146,22 @@ let
     else if t1 == "VTt" && t2 == "VTt" then true
     else if t1 == "VRefl" && t2 == "VRefl" then true
     else if t1 == "VFunext" && t2 == "VFunext" then true
-    else if t1 == "VU" && t2 == "VU" then v1.level == v2.level
+    else if t1 == "VU" && t2 == "VU" then
+      # Fast-path: both levels are the `VLevelZero` singleton — skip
+      # the flatten/dedup/sort pipeline. Falls through to `convLevel`
+      # for any non-zero level expression.
+      if v1.level.tag == "VLevelZero" && v2.level.tag == "VLevelZero"
+      then true
+      else convLevel v1.level v2.level
+    else if t1 == "VLevel" && t2 == "VLevel" then true
+    # Level expressions: canonicalise then compare. Fires whenever
+    # either side carries a Level constructor; a pure-VNe Level
+    # expression (e.g. a bound variable of type Level) falls through
+    # to the VNe/VNe rule below. Tags compared inline to avoid
+    # per-conv thunk allocation on the hot conv-dispatch path.
+    else if t1 == "VLevelZero" || t1 == "VLevelSuc" || t1 == "VLevelMax"
+         || t2 == "VLevelZero" || t2 == "VLevelSuc" || t2 == "VLevelMax"
+      then convLevel v1 v2
     else if t1 == "VString" && t2 == "VString" then true
     else if t1 == "VInt" && t2 == "VInt" then true
     else if t1 == "VFloat" && t2 == "VFloat" then true
@@ -61,8 +195,39 @@ let
       && conv (d + 1) (E.instantiate v1.closure (V.freshVar d))
                       (E.instantiate v2.closure (V.freshVar d))
     else if t1 == "VLam" && t2 == "VLam" then
-      conv (d + 1) (E.instantiate v1.closure (V.freshVar d))
-                   (E.instantiate v2.closure (V.freshVar d))
+      let fv = V.freshVar d; in
+      conv (d + 1) (E.instantiate v1.closure fv)
+                   (E.instantiate v2.closure fv)
+    # §6.2a Pi-eta: f ≡ λx. f x for any function f. Fires when exactly
+    # one side is a VLam and the other is a non-VLam value (VNe, VPair,
+    # etc.) of function type. Symmetric to Sigma-eta below: instantiate
+    # the VLam under a fresh var on one side, vApp the other side to
+    # the same fresh var, recurse. Sound because conv is called on
+    # values sharing a type — if one side is VLam, that type is VPi, and
+    # the other side's only inhabitants up to definitional equality are
+    # its own eta-expansions. Fires symmetrically (VLam-vs-other and
+    # other-vs-VLam) to keep conv reflexive on Pi-typed neutrals.
+    # Termination: each rule descends under one binder while consuming
+    # one VLam, so the recursive call is on strictly smaller VLam-depth
+    # on at least one side; cannot loop. Pre-pass via `etaReducedFn`
+    # short-circuits whenever the VLam is a syntactic η-expansion of an
+    # in-scope value `f` (body = `app (var k≥1) (var 0)`): the recursive
+    # call collapses to `conv d f other` — no fresh var, no `vApp`, no
+    # `instantiate`, one fewer binder layer.
+    else if t1 == "VLam" && t2 != "VLam" then
+      let etaFn = etaReducedFn v1.closure; in
+      if etaFn != null then conv d etaFn v2
+      else
+        let fv = V.freshVar d; in
+        conv (d + 1) (E.instantiate v1.closure fv)
+                     (E.vApp v2 fv)
+    else if t1 != "VLam" && t2 == "VLam" then
+      let etaFn = etaReducedFn v2.closure; in
+      if etaFn != null then conv d v1 etaFn
+      else
+        let fv = V.freshVar d; in
+        conv (d + 1) (E.vApp v1 fv)
+                     (E.instantiate v2.closure fv)
     else if t1 == "VSigma" && t2 == "VSigma" then
       conv d v1.fst v2.fst
       && conv (d + 1) (E.instantiate v1.closure (V.freshVar d))
@@ -116,16 +281,33 @@ let
       conv d v1.type v2.type && conv d v1.lhs v2.lhs && conv d v1.rhs v2.rhs
 
     # Descriptions
-    else if t1 == "VDesc" && t2 == "VDesc" then conv d v1.I v2.I
+    else if t1 == "VDesc" && t2 == "VDesc" then
+      # Level-zero fast-path: prelude descriptions live at `desc^0`,
+      # so skip the full `convLevel` pipeline when both sides are the
+      # `VLevelZero` singleton.
+      (if v1.level.tag == "VLevelZero" && v2.level.tag == "VLevelZero"
+       then true
+       else convLevel v1.level v2.level)
+      && conv d v1.I v2.I
     else if t1 == "VDescRet" && t2 == "VDescRet" then conv d v1.j v2.j
     else if t1 == "VDescArg" && t2 == "VDescArg" then
-      conv d v1.S v2.S
+      # Level-zero fast-path at the new `k` slot: the prelude's
+      # pre-existing `arg S T` sites all carry `k = 0`, so skip the
+      # full `convLevel` pipeline when both sides are the
+      # `VLevelZero` singleton.
+      (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
+       then true
+       else convLevel v1.k v2.k)
+      && conv d v1.S v2.S
       && conv (d + 1) (E.instantiate v1.T (V.freshVar d))
                       (E.instantiate v2.T (V.freshVar d))
     else if t1 == "VDescRec" && t2 == "VDescRec" then
       conv d v1.j v2.j && conv d v1.D v2.D
     else if t1 == "VDescPi" && t2 == "VDescPi" then
-      conv d v1.S v2.S && conv d v1.f v2.f && conv d v1.D v2.D
+      (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
+       then true
+       else convLevel v1.k v2.k)
+      && conv d v1.S v2.S && conv d v1.f v2.f && conv d v1.D v2.D
     else if t1 == "VDescPlus" && t2 == "VDescPlus" then
       conv d v1.A v2.A && conv d v1.B v2.B
     else if t1 == "VMu" && t2 == "VMu" then
@@ -178,7 +360,8 @@ let
       conv d e1.D e2.D && conv d e1.motive e2.motive
       && conv d e1.step e2.step && conv d e1.i e2.i
     else if t1 == "EDescElim" then
-      conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
+      conv d e1.k e2.k
+      && conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
       && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
       && conv d e1.onPi e2.onPi && conv d e1.onPlus e2.onPlus
     else false;
@@ -222,7 +405,7 @@ in mk {
     `λx. f(x)` are **not** definitionally equal. Cumulativity
     (`U(i) ≤ U(j)`) is handled in check.nix, not here.
   '';
-  value = { inherit conv convSp convElim; };
+  value = { inherit conv convSp convElim normLevel convLevel; };
   tests = let
     inherit (V) vNat vZero vSucc vPi vLam vSigma vPair
       vList vNil vCons vUnit vTt vSum vInl vInr vEq vRefl vU vNe
@@ -237,8 +420,8 @@ in mk {
     "conv-refl" = { expr = conv 0 vRefl vRefl; expected = true; };
     "conv-funext" = { expr = conv 0 V.vFunext V.vFunext; expected = true; };
     "conv-funext-refl" = { expr = conv 0 V.vFunext vRefl; expected = false; };
-    "conv-U0" = { expr = conv 0 (vU 0) (vU 0); expected = true; };
-    "conv-U1" = { expr = conv 0 (vU 1) (vU 1); expected = true; };
+    "conv-U0" = { expr = conv 0 (vU V.vLevelZero) (vU V.vLevelZero); expected = true; };
+    "conv-U1" = { expr = conv 0 (vU (V.vLevelSuc V.vLevelZero)) (vU (V.vLevelSuc V.vLevelZero)); expected = true; };
 
     # Primitive types
     "conv-string" = { expr = conv 0 V.vString V.vString; expected = true; };
@@ -264,7 +447,114 @@ in mk {
     # Structural rules — inequality
     "conv-nat-unit" = { expr = conv 0 vNat vUnit; expected = false; };
     "conv-zero-tt" = { expr = conv 0 vZero vTt; expected = false; };
-    "conv-U0-U1" = { expr = conv 0 (vU 0) (vU 1); expected = false; };
+    "conv-U0-U1" = { expr = conv 0 (vU V.vLevelZero) (vU (V.vLevelSuc V.vLevelZero)); expected = false; };
+
+    # Universe conv uses the Level normaliser on the level argument,
+    # so distinct-but-equivalent Level values match at VU.
+    "conv-U-max-zero-zero-vs-U0" = {
+      expr = conv 0 (vU (V.vLevelMax V.vLevelZero V.vLevelZero)) (vU V.vLevelZero);
+      expected = true;
+    };
+    "conv-U-suc-max-a-a-vs-suc-a" = {
+      # `U(suc (max a a)) ≡ U(suc a)` where a = suc zero.
+      expr = conv 0
+        (vU (V.vLevelSuc
+          (V.vLevelMax (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero))))
+        (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)));
+      expected = true;
+    };
+    "conv-U-distinct-levels-rejects" = {
+      expr = conv 0
+        (vU (V.vLevelSuc V.vLevelZero))
+        (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)));
+      expected = false;
+    };
+
+    # Level sort
+    "conv-vlevel" = { expr = conv 0 V.vLevel V.vLevel; expected = true; };
+    "conv-vlevel-vnat" = { expr = conv 0 V.vLevel vNat; expected = false; };
+    "conv-level-zero" = {
+      expr = conv 0 V.vLevelZero V.vLevelZero;
+      expected = true;
+    };
+    "conv-level-suc-zero" = {
+      expr = conv 0 (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero);
+      expected = true;
+    };
+    "conv-level-suc-neq" = {
+      expr = conv 0 V.vLevelZero (V.vLevelSuc V.vLevelZero);
+      expected = false;
+    };
+
+    # Canonicalisation rules: idempotence, zero absorption, suc
+    # distribution over max, sorted spine.
+    "level-idempotent-max-a-a" = {
+      # max zero zero ≡ zero
+      expr = conv 0
+        (V.vLevelMax V.vLevelZero V.vLevelZero)
+        V.vLevelZero;
+      expected = true;
+    };
+    "level-max-a-zero" = {
+      # max (suc zero) zero ≡ suc zero
+      expr = conv 0
+        (V.vLevelMax (V.vLevelSuc V.vLevelZero) V.vLevelZero)
+        (V.vLevelSuc V.vLevelZero);
+      expected = true;
+    };
+    "level-max-zero-a" = {
+      # max zero (suc zero) ≡ suc zero
+      expr = conv 0
+        (V.vLevelMax V.vLevelZero (V.vLevelSuc V.vLevelZero))
+        (V.vLevelSuc V.vLevelZero);
+      expected = true;
+    };
+    "level-suc-distributes-over-max" = {
+      # suc (max (suc zero) zero) ≡ max (suc (suc zero)) (suc zero)
+      expr = conv 0
+        (V.vLevelSuc (V.vLevelMax (V.vLevelSuc V.vLevelZero) V.vLevelZero))
+        (V.vLevelMax (V.vLevelSuc (V.vLevelSuc V.vLevelZero)) (V.vLevelSuc V.vLevelZero));
+      expected = true;
+    };
+    "level-max-sorted-spine-closed" = {
+      # max (suc zero) (suc zero) ≡ suc zero (idempotence collapses the pair)
+      expr = conv 0
+        (V.vLevelMax (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero))
+        (V.vLevelSuc V.vLevelZero);
+      expected = true;
+    };
+    "level-max-associative" = {
+      # max a (max b c) ≡ max (max a b) c — at the canonical-form level
+      # this is structural merging, so any 3-arity max expression equates.
+      expr = conv 0
+        (V.vLevelMax V.vLevelZero
+          (V.vLevelMax (V.vLevelSuc V.vLevelZero) V.vLevelZero))
+        (V.vLevelMax
+          (V.vLevelMax V.vLevelZero (V.vLevelSuc V.vLevelZero))
+          V.vLevelZero);
+      expected = true;
+    };
+    "level-max-distinct-shifts-preserved" = {
+      # max (suc zero) (suc (suc zero)) ≢ suc zero — different top shifts.
+      expr = conv 0
+        (V.vLevelMax (V.vLevelSuc V.vLevelZero)
+                     (V.vLevelSuc (V.vLevelSuc V.vLevelZero)))
+        (V.vLevelSuc V.vLevelZero);
+      expected = false;
+    };
+    "level-suc-suc-zero-self" = {
+      # suc (suc zero) ≡ suc (suc zero)
+      expr = conv 0
+        (V.vLevelSuc (V.vLevelSuc V.vLevelZero))
+        (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
+      expected = true;
+    };
+    "level-suc-suc-zero-neq-suc-zero" = {
+      expr = conv 0
+        (V.vLevelSuc (V.vLevelSuc V.vLevelZero))
+        (V.vLevelSuc V.vLevelZero);
+      expected = false;
+    };
 
     # VSucc
     "conv-succ-eq" = { expr = conv 0 (vSucc vZero) (vSucc vZero); expected = true; };
@@ -442,13 +732,29 @@ in mk {
       expected = true;
     };
 
-    # No pi-eta — f and λx.f(x) are NOT definitionally equal (§6.5)
-    # freshVar(0) is a neutral, VLam wrapping App(freshVar(0), freshVar(1)) is its eta-expansion
-    "conv-no-eta-lam" = {
+    # Pi-eta: f ≡ λx. f x. freshVar(0) is a neutral function value;
+    # `λx. f x` is its eta-expansion. Both must convert under the rule.
+    "conv-pi-eta-neutral-vs-lam" = {
       expr = conv 1
         (V.freshVar 0)
         (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))));
-      expected = false;
+      expected = true;
+    };
+    "conv-pi-eta-lam-vs-neutral" = {
+      expr = conv 1
+        (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))))
+        (V.freshVar 0);
+      expected = true;
+    };
+    # Pi-eta degenerate case: λx. tt vs a function-typed neutral with
+    # codomain ⊤. Under the binder, both reduce to `tt` (via ⊤-eta on
+    # the right). Exercises the exact pattern that motivates pi-eta in
+    # the levitation iso (descPi's f-slot of type S → ⊤).
+    "conv-pi-eta-unit-codomain" = {
+      expr = conv 1
+        (V.freshVar 0)
+        (vLam "_" vNat (mkClosure [ ] T.mkTt));
+      expected = true;
     };
 
     # §6.3a Sigma-eta: ⟨fst x, snd x⟩ ≡ x for neutral x
@@ -490,9 +796,9 @@ in mk {
     };
 
     # Descriptions
-    "conv-desc" = { expr = conv 0 (V.vDesc V.vUnit) (V.vDesc V.vUnit); expected = true; };
+    "conv-desc" = { expr = conv 0 (V.vDesc V.vLevelZero V.vUnit) (V.vDesc V.vLevelZero V.vUnit); expected = true; };
     "conv-desc-diff-I" = {
-      expr = conv 0 (V.vDesc V.vUnit) (V.vDesc V.vNat);
+      expr = conv 0 (V.vDesc V.vLevelZero V.vUnit) (V.vDesc V.vLevelZero V.vNat);
       expected = false;
     };
     "conv-descret" = {
@@ -506,15 +812,27 @@ in mk {
     };
     "conv-descarg" = {
       expr = conv 0
-        (V.vDescArg vNat (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg vNat (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = true;
     };
     "conv-descarg-diff-S" = {
       expr = conv 0
-        (V.vDescArg vNat (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg vUnit (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg V.vLevelZero vUnit (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = false;
+    };
+    "conv-descarg-diff-k" = {
+      expr = conv 0
+        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) vNat (mkClosure [] (T.mkDescRet T.mkTt)));
+      expected = false;
+    };
+    "conv-descarg-same-k-one" = {
+      expr = conv 0
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) (mkClosure [] (T.mkDescRet T.mkTt)));
+      expected = true;
     };
     "conv-descrec" = {
       expr = conv 0
@@ -531,8 +849,8 @@ in mk {
     "conv-descpi" = {
       expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
         conv 0
-          (V.vDescPi vNat f (V.vDescRet vTt))
-          (V.vDescPi vNat f (V.vDescRet vTt));
+          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
+          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt));
       expected = true;
     };
     "conv-descpi-diff-S" = {
@@ -540,15 +858,22 @@ in mk {
         f1 = V.vLam "_" vNat (mkClosure [] T.mkTt);
         f2 = V.vLam "_" vUnit (mkClosure [] T.mkTt);
       in conv 0
-        (V.vDescPi vNat f1 (V.vDescRet vTt))
-        (V.vDescPi vUnit f2 (V.vDescRet vTt));
+        (V.vDescPi V.vLevelZero vNat f1 (V.vDescRet vTt))
+        (V.vDescPi V.vLevelZero vUnit f2 (V.vDescRet vTt));
       expected = false;
     };
     "conv-descpi-diff-D" = {
       expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
         conv 0
-          (V.vDescPi vNat f (V.vDescRet vTt))
-          (V.vDescPi vNat f (V.vDescRec vTt (V.vDescRet vTt)));
+          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
+          (V.vDescPi V.vLevelZero vNat f (V.vDescRec vTt (V.vDescRet vTt)));
+      expected = false;
+    };
+    "conv-descpi-diff-k" = {
+      expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
+        conv 0
+          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
+          (V.vDescPi (V.vLevelSuc V.vLevelZero) vNat f (V.vDescRet vTt));
       expected = false;
     };
     "conv-mu" = {
@@ -595,14 +920,20 @@ in mk {
     };
     "conv-ne-desc-elim" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ]);
+        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ]);
       expected = true;
     };
     "conv-ne-desc-elim-diff" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim vUnit vZero vZero vZero vZero vZero) ]);
+        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim V.vLevelZero vUnit vZero vZero vZero vZero vZero) ]);
+      expected = false;
+    };
+    "conv-ne-desc-elim-diff-k" = {
+      expr = conv 1
+        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim (V.vLevelSuc V.vLevelZero) vNat vZero vZero vZero vZero vZero) ]);
       expected = false;
     };
 

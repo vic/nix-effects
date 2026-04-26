@@ -42,7 +42,8 @@ api.mk {
     walker. Kernel HOAS entry points (`checkHoas`/`inferHoas`) use this
     variant.
 
-    `hint` is a string from `fx.diag.hints.resolve` or null.
+    `hint` is a `Hint` record (`{ _tag="Hint"; text; category;
+    severity; docLink; }`) from `fx.diag.hints.resolve`, or null.
     `surface` is the SourceMap's hoas payload at the blame chain's
     leaf, or null when the chain exits the mapped region.
 

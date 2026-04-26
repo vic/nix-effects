@@ -54,16 +54,42 @@ let
   vFunext = { tag = "VFunext"; };
 
   # Descriptions
-  vDesc = I: { tag = "VDesc"; inherit I; };
+  # `desc^level I` carries an explicit universe level. The level is
+  # `vLevelZero` for the prelude (no high-universe contents); higher
+  # levels appear when contained `descArg`/`descPi` quantify over
+  # sorts at strictly positive universes. Int-shim mirrors `vU`.
+  vDesc = level: I: { tag = "VDesc"; inherit level I; };
   vDescRet = j: { tag = "VDescRet"; inherit j; };            # j : I (target index of ret-leaf)
-  vDescArg = S: T: { tag = "VDescArg"; inherit S T; };       # T is a closure S → Desc I
+  # `arg` / `pi` carry a universe level `k` (Level Val) alongside
+  # `S : U(k)`. Callers pass a Level Val directly; integer literals
+  # must be wrapped explicitly via `vLevelLit n` (or `vLevelZero` /
+  # `vLevelSuc vLevelZero` for the common 0/1 cases).
+  vDescArg = k: S: T: { tag = "VDescArg"; inherit k S T; };  # T is a closure S → Desc I
   vDescRec = j: D: { tag = "VDescRec"; inherit j D; };       # j : I (index of recursive child)
-  vDescPi = S: f: D: { tag = "VDescPi"; inherit S f D; };    # f : S → I (index of each child), stored as Val
+  vDescPi = k: S: f: D: {                                    # f : S → I (index of each child), stored as Val
+    tag = "VDescPi";
+    inherit k S f D;
+  };
   vDescPlus = A: B: { tag = "VDescPlus"; inherit A B; };     # A, B : Desc I — first-class binary coproduct
   vMu = I: D: i: { tag = "VMu"; inherit I D i; };            # μ D i — the type at index i : I
   vDescCon = D: i: d: { tag = "VDescCon"; inherit D i d; };  # target index i carried alongside payload
 
-  # Universes
+  # Level sort (Tarski). `Level : U(0)`. Expressions built from
+  # zero/suc/max; canonicalised at conv time.
+  vLevel = { tag = "VLevel"; };
+  vLevelZero = { tag = "VLevelZero"; };
+  vLevelSuc = pred: { tag = "VLevelSuc"; inherit pred; };
+  vLevelMax = lhs: rhs: { tag = "VLevelMax"; inherit lhs rhs; };
+
+  # Concrete-level literal as a Level value.
+  vLevelLit = n:
+    if n <= 0 then vLevelZero
+    else vLevelSuc (vLevelLit (n - 1));
+
+  # Universes. Carries a Level value. Callers pass a Level Val
+  # directly; integer literals must be wrapped explicitly via
+  # `vLevelLit n` (or `vLevelZero` / `vLevelSuc vLevelZero` for the
+  # common 0/1 cases).
   vU = level: { tag = "VU"; inherit level; };
 
   # Axiomatized primitives
@@ -111,8 +137,11 @@ let
   eStrEq = arg: { tag = "EStrEq"; inherit arg; };
   eDescInd = D: motive: step: i:
     { tag = "EDescInd"; inherit D motive step i; };
-  eDescElim = motive: onRet: onArg: onRec: onPi: onPlus:
-    { tag = "EDescElim"; inherit motive onRet onArg onRec onPi onPlus; };
+  # `EDescElim` carries a Level value `k` matching `mkDescElim`'s slot,
+  # so a quoted spine roundtrips back to the same `mkDescElim k …` term
+  # and conv compares descElim frames field-wise.
+  eDescElim = k: motive: onRet: onArg: onRec: onPi: onPlus:
+    { tag = "EDescElim"; inherit k motive onRet onArg onRec onPi onPlus; };
 
 in mk {
   doc = ''
@@ -169,6 +198,7 @@ in mk {
     inherit vEq vRefl vFunext;
     inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
     inherit vU;
+    inherit vLevel vLevelZero vLevelSuc vLevelMax vLevelLit;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vOpaqueLam;
@@ -206,8 +236,24 @@ in mk {
     "veq-tag" = { expr = (vEq vNat vZero vZero).tag; expected = "VEq"; };
     "vrefl-tag" = { expr = vRefl.tag; expected = "VRefl"; };
     "vfunext-tag" = { expr = vFunext.tag; expected = "VFunext"; };
-    "vu-tag" = { expr = (vU 0).tag; expected = "VU"; };
-    "vu-level" = { expr = (vU 1).level; expected = 1; };
+    "vu-tag" = { expr = (vU vLevelZero).tag; expected = "VU"; };
+    "vu-level-zero" = { expr = (vU vLevelZero).level.tag; expected = "VLevelZero"; };
+    "vu-level-suc" = { expr = (vU (vLevelSuc vLevelZero)).level.tag; expected = "VLevelSuc"; };
+    "vu-level-suc-pred" = {
+      expr = (vU (vLevelSuc vLevelZero)).level.pred.tag;
+      expected = "VLevelZero";
+    };
+    "vu-level-max" = {
+      expr = (vU (vLevelMax vLevelZero vLevelZero)).level.tag;
+      expected = "VLevelMax";
+    };
+    "vlevel-tag" = { expr = vLevel.tag; expected = "VLevel"; };
+    "vlevel-zero-tag" = { expr = vLevelZero.tag; expected = "VLevelZero"; };
+    "vlevel-suc-tag" = { expr = (vLevelSuc vLevelZero).tag; expected = "VLevelSuc"; };
+    "vlevel-suc-pred" = { expr = (vLevelSuc vLevelZero).pred.tag; expected = "VLevelZero"; };
+    "vlevel-max-tag" = { expr = (vLevelMax vLevelZero vLevelZero).tag; expected = "VLevelMax"; };
+    "vlevel-lit-0-tag" = { expr = (vLevelLit 0).tag; expected = "VLevelZero"; };
+    "vlevel-lit-2-tag" = { expr = (vLevelLit 2).tag; expected = "VLevelSuc"; };
     "vstring-tag" = { expr = vString.tag; expected = "VString"; };
     "vint-tag" = { expr = vInt.tag; expected = "VInt"; };
     "vfloat-tag" = { expr = vFloat.tag; expected = "VFloat"; };
@@ -248,32 +294,49 @@ in mk {
     "ej-tag" = { expr = (eJ vNat vZero vNat vZero vZero).tag; expected = "EJ"; };
 
     # Descriptions (indexed)
-    "vdesc-tag" = { expr = (vDesc vUnit).tag; expected = "VDesc"; };
-    "vdesc-I" = { expr = (vDesc vUnit).I.tag; expected = "VUnit"; };
+    "vdesc-tag" = { expr = (vDesc vLevelZero vUnit).tag; expected = "VDesc"; };
+    "vdesc-I" = { expr = (vDesc vLevelZero vUnit).I.tag; expected = "VUnit"; };
+    "vdesc-level" = { expr = (vDesc vLevelZero vUnit).level.tag; expected = "VLevelZero"; };
+    "vdesc-level-non-zero" = {
+      expr = (vDesc (vLevelSuc vLevelZero) vUnit).level.tag;
+      expected = "VLevelSuc";
+    };
     "vdescret-tag" = { expr = (vDescRet vTt).tag; expected = "VDescRet"; };
     "vdescret-j" = { expr = (vDescRet vTt).j.tag; expected = "VTt"; };
     "vdescarg-tag" = {
-      expr = (vDescArg vNat (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).tag;
+      expr = (vDescArg vLevelZero vNat (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).tag;
       expected = "VDescArg";
+    };
+    "vdescarg-k-zero" = {
+      expr = (vDescArg vLevelZero vNat (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).k.tag;
+      expected = "VLevelZero";
+    };
+    "vdescarg-k-suc" = {
+      expr = (vDescArg (vLevelSuc vLevelZero) vNat (mkClosure [] { tag = "desc-ret"; j = { tag = "tt"; }; })).k.tag;
+      expected = "VLevelSuc";
     };
     "vdescrec-tag" = { expr = (vDescRec vTt (vDescRet vTt)).tag; expected = "VDescRec"; };
     "vdescrec-j" = { expr = (vDescRec vTt (vDescRet vTt)).j.tag; expected = "VTt"; };
     "vdescrec-D" = { expr = (vDescRec vTt (vDescRet vTt)).D.tag; expected = "VDescRet"; };
     "vdescpi-tag" = {
-      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).tag;
+      expr = (vDescPi vLevelZero vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).tag;
       expected = "VDescPi";
     };
     "vdescpi-S" = {
-      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).S.tag;
+      expr = (vDescPi vLevelZero vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).S.tag;
       expected = "VNat";
     };
     "vdescpi-f" = {
-      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).f.tag;
+      expr = (vDescPi vLevelZero vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).f.tag;
       expected = "VLam";
     };
     "vdescpi-D" = {
-      expr = (vDescPi vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).D.tag;
+      expr = (vDescPi vLevelZero vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).D.tag;
       expected = "VDescRet";
+    };
+    "vdescpi-k-zero" = {
+      expr = (vDescPi vLevelZero vNat (vLam "_" vNat (mkClosure [] { tag = "tt"; })) (vDescRet vTt)).k.tag;
+      expected = "VLevelZero";
     };
     "vmu-tag" = { expr = (vMu vUnit (vDescRet vTt) vTt).tag; expected = "VMu"; };
     "vmu-I" = { expr = (vMu vUnit (vDescRet vTt) vTt).I.tag; expected = "VUnit"; };
@@ -293,7 +356,8 @@ in mk {
     };
     "edescind-tag" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).tag; expected = "EDescInd"; };
     "edescind-i" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).i.tag; expected = "VTt"; };
-    "edescelim-tag" = { expr = (eDescElim vNat vZero vZero vZero vZero vZero).tag; expected = "EDescElim"; };
+    "edescelim-tag" = { expr = (eDescElim vLevelZero vNat vZero vZero vZero vZero vZero).tag; expected = "EDescElim"; };
+    "edescelim-k" = { expr = (eDescElim vLevelZero vNat vZero vZero vZero vZero vZero).k.tag; expected = "VLevelZero"; };
     "vdescplus-tag" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).tag; expected = "VDescPlus"; };
     "vdescplus-A" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).A.tag; expected = "VDescRet"; };
     "vdescplus-B" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).B.tag; expected = "VDescRet"; };

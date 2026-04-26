@@ -21,10 +21,16 @@ let
     vLam vPi vSigma vPair vNat vZero vSucc
     vList vNil vCons
     vUnit vTt vSum vInl vInr vEq vRefl vFunext vU vNe
+    vLevel vLevelZero vLevelSuc vLevelMax
     vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
     eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq;
+
+  # Cached `U(0)` value. `mkU mkLevelZero` produces a term whose `level` is the
+  # `level-zero` singleton; evaluating under the U-case returns this
+  # sentinel directly — no fuel decrement, no dispatch, no allocation.
+  vUZero = vU vLevelZero;
 in {
   scope = {
     defaultFuel = 10000000;
@@ -225,11 +231,26 @@ in {
           (ev tm.base) (ev tm.rhs) (ev tm.eq)
 
       # Descriptions
-      else if t == "desc" then vDesc (ev tm.I)
+      else if t == "desc" then
+        # Level-zero fast-path: the prelude `desc I` (= desc^0 I) is
+        # the overwhelmingly common shape. Reuse the `vLevelZero`
+        # singleton and skip the eval/int-shim pipeline on `tm.k`.
+        if tm.k.tag == "level-zero"
+        then vDesc vLevelZero (ev tm.I)
+        else vDesc (ev tm.k) (ev tm.I)
       else if t == "desc-ret" then vDescRet (ev tm.j)
-      else if t == "desc-arg" then vDescArg (ev tm.S) (mkClosure env tm.T)
+      # Level-zero fast-path at the new `k` slot: when `tm.k` is the
+      # `level-zero` singleton (the overwhelmingly common shape for
+      # prelude descriptions), skip eval and pass `vLevelZero` directly.
+      else if t == "desc-arg" then
+        vDescArg
+          (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
+          (ev tm.S) (mkClosure env tm.T)
       else if t == "desc-rec" then vDescRec (ev tm.j) (ev tm.D)
-      else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.f) (ev tm.D)
+      else if t == "desc-pi" then
+        vDescPi
+          (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
+          (ev tm.S) (ev tm.f) (ev tm.D)
       else if t == "desc-plus" then vDescPlus (ev tm.A) (ev tm.B)
       else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
       # desc-con — trampolined for deep recursive chains (5000+).
@@ -338,10 +359,20 @@ in {
       else if t == "desc-ind" then
         self.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.i) (ev tm.scrut)
       else if t == "desc-elim" then
-        self.vDescElimF f (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
+        self.vDescElimF f (ev tm.k) (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
           (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
-      else if t == "U" then vU tm.level
+      else if t == "U" then
+        if tm.level.tag == "level-zero" then vUZero
+        else vU (ev tm.level)
+
+      # Level expressions are preserved structurally. Normalisation
+      # (`max a a = a`, `suc (max a b) = max (suc a) (suc b)`, zero
+      # absorption, sorted spine) happens at conv time, not eval.
+      else if t == "level" then vLevel
+      else if t == "level-zero" then vLevelZero
+      else if t == "level-suc" then vLevelSuc (ev tm.pred)
+      else if t == "level-max" then vLevelMax (ev tm.lhs) (ev tm.rhs)
 
       # Axiomatized primitives
       else if t == "string" then vString
@@ -444,7 +475,7 @@ in {
       expr =
         let
           stepTm = T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)));
-          r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat (T.mkU 0)) T.mkZero stepTm (T.mkSucc T.mkZero));
+          r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat (T.mkU T.mkLevelZero)) T.mkZero stepTm (T.mkSucc T.mkZero));
         in r.tag;
       expected = "VSucc";
     };
@@ -501,14 +532,25 @@ in {
     };
     "eval-j-stuck" = {
       expr = (eval [ (freshVar 0) ] (T.mkJ T.mkNat T.mkZero
-        (T.mkLam "y" T.mkNat (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 0)) (T.mkU 0)))
-        (T.mkU 0) T.mkZero (T.mkVar 0))).tag;
+        (T.mkLam "y" T.mkNat (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 0)) (T.mkU T.mkLevelZero)))
+        (T.mkU T.mkLevelZero) T.mkZero (T.mkVar 0))).tag;
       expected = "VNe";
     };
 
-    "eval-U0" = { expr = (eval [] (T.mkU 0)).tag; expected = "VU"; };
-    "eval-U0-level" = { expr = (eval [] (T.mkU 0)).level; expected = 0; };
-    "eval-U1-level" = { expr = (eval [] (T.mkU 1)).level; expected = 1; };
+    "eval-U0" = { expr = (eval [] (T.mkU T.mkLevelZero)).tag; expected = "VU"; };
+    "eval-U0-level" = {
+      expr = (eval [] (T.mkU T.mkLevelZero)).level.tag;
+      expected = "VLevelZero";
+    };
+    "eval-U1-level" = {
+      expr = (eval [] (T.mkU (T.mkLevelSuc T.mkLevelZero))).level.tag;
+      expected = "VLevelSuc";
+    };
+    "eval-U-level-max" = {
+      expr = (eval [] (T.mkU (T.mkLevelMax T.mkLevelZero
+        (T.mkLevelSuc T.mkLevelZero)))).level.tag;
+      expected = "VLevelMax";
+    };
 
     "eval-string" = { expr = (eval [] T.mkString).tag; expected = "VString"; };
     "eval-int" = { expr = (eval [] T.mkInt).tag; expected = "VInt"; };
@@ -600,31 +642,46 @@ in {
       expected = "VCons";
     };
 
-    "eval-desc" = { expr = (eval [] (T.mkDesc T.mkUnit)).tag; expected = "VDesc"; };
+    "eval-desc" = { expr = (eval [] (T.mkDesc T.mkLevelZero T.mkUnit)).tag; expected = "VDesc"; };
     "eval-desc-ret" = { expr = (eval [] (T.mkDescRet T.mkTt)).tag; expected = "VDescRet"; };
     "eval-desc-arg" = {
-      expr = (eval [] (T.mkDescArg T.mkNat
+      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkNat
         (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).tag;
       expected = "VDescArg";
+    };
+    "eval-desc-arg-k-zero" = {
+      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkNat
+        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
+      expected = "VLevelZero";
+    };
+    "eval-desc-arg-k-one" = {
+      expr = (eval [] (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) T.mkNat
+        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
+      expected = "VLevelSuc";
     };
     "eval-desc-rec" = {
       expr = (eval [] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))).tag;
       expected = "VDescRec";
     };
     "eval-desc-pi" = {
-      expr = (eval [] (T.mkDescPi T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "VDescPi";
     };
     "eval-desc-pi-S" = {
-      expr = (eval [] (T.mkDescPi T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
       expected = "VNat";
     };
     "eval-desc-pi-D" = {
-      expr = (eval [] (T.mkDescPi T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
       expected = "VDescRet";
+    };
+    "eval-desc-pi-k-zero" = {
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
+        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).k.tag;
+      expected = "VLevelZero";
     };
     "eval-mu" = {
       expr = (eval [] (T.mkMu T.mkUnit (T.mkDescRet T.mkTt) T.mkTt)).tag;
@@ -643,8 +700,8 @@ in {
 
     "eval-desc-elim-ret" = {
       # descElim on VDescRet applies onRet to j. With onRet = λ_:Unit. Unit and j=vTt, result is VUnit.
-      expr = (eval [] (T.mkDescElim
-        (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
+      expr = (eval [] (T.mkDescElim T.mkLevelZero
+        (T.mkLam "_" (T.mkDesc T.mkLevelZero T.mkUnit) (T.mkU T.mkLevelZero))
         (T.mkLam "_" T.mkUnit T.mkUnit)
         T.mkUnit T.mkUnit T.mkUnit T.mkUnit
         (T.mkDescRet T.mkTt))).tag;
@@ -652,7 +709,7 @@ in {
     };
     "eval-desc-elim-stuck" = {
       # descElim on a neutral scrutinee produces VNe with EDescElim frame
-      expr = (eval [ (freshVar 0) ] (T.mkDescElim
+      expr = (eval [ (freshVar 0) ] (T.mkDescElim T.mkLevelZero
         T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
       expected = "VNe";
     };
@@ -672,11 +729,11 @@ in {
     "eval-desc-ind-arg-con" = {
       # D = arg Nat (λ_. ret tt), ind D P step tt (con tt (zero, refl)) = 0
       expr = let
-        D = T.mkDescArg T.mkNat
+        D = T.mkDescArg T.mkLevelZero T.mkNat
           (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt));
         P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
         step = T.mkLam "i" T.mkUnit
-          (T.mkLam "d" (T.mkU 0)
+          (T.mkLam "d" (T.mkU T.mkLevelZero)
             (T.mkLam "ih" T.mkUnit T.mkZero));
         scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkZero T.mkRefl);
       in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;

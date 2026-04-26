@@ -61,58 +61,101 @@ let
     { tag = "j"; inherit type lhs motive base rhs eq; };
 
   # -- Function extensionality postulate --
-  # Atomic constant whose type is the closed 5-layer Π chain
+  # Atomic constant whose type is the closed 7-layer Π chain
   # `funextTypeTm` below. No reduction rule; inhabits
   # `Eq (Π(a:A). B a) f g` given a pointwise-equality witness.
   mkFunext = { tag = "funext"; };
 
-  # Closed Π chain serving as the type of `funext` at universe 0.
-  # Equivalent to:
-  #   Π(A : U 0).
-  #   Π(B : A → U 0).
+  # Closed Π chain serving as the type of `funext`, heterogeneous in
+  # the levels of the domain `A` and the codomain `B a`:
+  #   Π(j : Level).
+  #   Π(k : Level).
+  #   Π(A : U(j)).
+  #   Π(B : A → U(k)).
   #   Π(f : Π(a:A). B a).
   #   Π(g : Π(a:A). B a).
   #   Π(_ : Π(a:A). Eq (B a) (f a) (g a)).
   #     Eq (Π(a:A). B a) f g
-  # De Bruijn depths — at the Pi-body introducing binder k (k = 0..4):
-  #   k=0 (A bound): A=0.
-  #   k=1 (B bound): B=0, A=1.
-  #   k=2 (f bound): f=0, B=1, A=2.
-  #   k=3 (g bound): g=0, f=1, B=2, A=3.
-  #   k=4 (hyp bound): hyp=0, g=1, f=2, B=3, A=4.
-  # The innermost Eq type `Π(a:A). B a` opens another a-binder, under
-  # which a=0 and every outer var shifts by 1.
+  # De Bruijn depths — at the Pi-body introducing binder b (b = 0..6):
+  #   b=0 (j bound): j=0.
+  #   b=1 (k bound): k=0, j=1.
+  #   b=2 (A bound): A=0, k=1, j=2.
+  #   b=3 (B bound): B=0, A=1, k=2, j=3.
+  #   b=4 (f bound): f=0, B=1, A=2, k=3, j=4.
+  #   b=5 (g bound): g=0, f=1, B=2, A=3, k=4, j=5.
+  #   b=6 (hyp bound): hyp=0, g=1, f=2, B=3, A=4, k=5, j=6.
+  # B's domain `Π(_:A). U(k)` opens an `_:A` binder under which the
+  # k-binder sits at index 2 (between A above and `_` below). The
+  # innermost Eq type `Π(a:A). B a` opens another a-binder under
+  # which a=0 and every outer var shifts by 1. The inner spine
+  # references {A, B, f, g, hyp} only — never j or k — so the new
+  # k-binder slotted between j and A leaves every inner-spine Var
+  # index unchanged; only A's `U(?)` annotation references j and
+  # shifts from index 0 to index 1.
   funextTypeTm =
-    mkPi "A" (mkU 0)
-      (mkPi "B" (mkPi "_" (mkVar 0) (mkU 0))
-        (mkPi "f" (mkPi "a" (mkVar 1) (mkApp (mkVar 1) (mkVar 0)))
-          (mkPi "g" (mkPi "a" (mkVar 2) (mkApp (mkVar 2) (mkVar 0)))
-            (mkPi "_"
-              (mkPi "a" (mkVar 3)
-                (mkEq
-                  (mkApp (mkVar 3) (mkVar 0))
-                  (mkApp (mkVar 2) (mkVar 0))
-                  (mkApp (mkVar 1) (mkVar 0))))
-              (mkEq
-                (mkPi "a" (mkVar 4) (mkApp (mkVar 4) (mkVar 0)))
-                (mkVar 2)
-                (mkVar 1))))));
+    mkPi "j" mkLevel
+      (mkPi "k" mkLevel
+        (mkPi "A" (mkU (mkVar 1))
+          (mkPi "B" (mkPi "_" (mkVar 0) (mkU (mkVar 2)))
+            (mkPi "f" (mkPi "a" (mkVar 1) (mkApp (mkVar 1) (mkVar 0)))
+              (mkPi "g" (mkPi "a" (mkVar 2) (mkApp (mkVar 2) (mkVar 0)))
+                (mkPi "_"
+                  (mkPi "a" (mkVar 3)
+                    (mkEq
+                      (mkApp (mkVar 3) (mkVar 0))
+                      (mkApp (mkVar 2) (mkVar 0))
+                      (mkApp (mkVar 1) (mkVar 0))))
+                  (mkEq
+                    (mkPi "a" (mkVar 4) (mkApp (mkVar 4) (mkVar 0)))
+                    (mkVar 2)
+                    (mkVar 1))))))));
 
   # -- Descriptions --
-  mkDesc = I: { tag = "desc"; inherit I; };
+  # `desc^k I` carries an explicit universe level `k` (Level Tm).
+  # Callers pass a Level Tm directly; integer literals must be
+  # wrapped explicitly via `mkLevelLit n` (or `mkLevelZero` /
+  # `mkLevelSuc mkLevelZero` for the common 0/1 cases).
+  mkDesc = k: I: { tag = "desc"; inherit k I; };
   mkDescRet = j: { tag = "desc-ret"; inherit j; };
-  mkDescArg = S: T: { tag = "desc-arg"; inherit S T; };
+  # `arg` / `pi` carry a universe level `k` (Level Tm). `S` inhabits
+  # `U(k)`. Callers pass a Level Tm directly; integer literals must
+  # be wrapped explicitly.
+  mkDescArg = k: S: T: { tag = "desc-arg"; inherit k S T; };
   mkDescRec = j: D: { tag = "desc-rec"; inherit j D; };
-  mkDescPi = S: f: D: { tag = "desc-pi"; inherit S f D; };
+  mkDescPi = k: S: f: D: { tag = "desc-pi"; inherit k S f D; };
   mkDescPlus = A: B: { tag = "desc-plus"; inherit A B; };
   mkMu = I: D: i: { tag = "mu"; inherit I D i; };
   mkDescCon = D: i: d: { tag = "desc-con"; inherit D i d; };
   mkDescInd = D: motive: step: i: scrut:
     { tag = "desc-ind"; inherit D motive step i scrut; };
-  mkDescElim = motive: onRet: onArg: onRec: onPi: onPlus: scrut:
-    { tag = "desc-elim"; inherit motive onRet onArg onRec onPi onPlus scrut; };
+  # `descElim` carries a universe level `k` (Level Tm). Its `onArg` /
+  # `onPi` cases bind their sort `S` at `U(k)`. Callers pass a Level
+  # Tm directly; integer literals must be wrapped explicitly.
+  mkDescElim = k: motive: onRet: onArg: onRec: onPi: onPlus: scrut: {
+    tag = "desc-elim";
+    inherit k motive onRet onArg onRec onPi onPlus scrut;
+  };
+
+  # -- Level sort --
+  # Tarski-style explicit universe levels. `Level` inhabits `U(0)`.
+  # Level expressions are built from `zero`, `suc`, and `max`; conv
+  # normalises them (idempotence of max, distribution of suc, zero
+  # absorption, sorted spine) before comparing structurally.
+  mkLevel = { tag = "level"; };
+  mkLevelZero = { tag = "level-zero"; };
+  mkLevelSuc = pred: { tag = "level-suc"; inherit pred; };
+  mkLevelMax = lhs: rhs: { tag = "level-max"; inherit lhs rhs; };
+
+  # Concrete-level literal: builds `suc^n zero` as a kernel Level term.
+  mkLevelLit = n:
+    if n <= 0 then mkLevelZero
+    else mkLevelSuc (mkLevelLit (n - 1));
 
   # -- Universes --
+  # `U` carries a Level-typed Tm. Callers pass a Level Tm directly;
+  # integer literals must be wrapped explicitly via `mkLevelLit n`
+  # (or `mkLevelZero` / `mkLevelSuc mkLevelZero` for the common 0/1
+  # cases).
   mkU = level: { tag = "U"; inherit level; };
 
   # -- Axiomatized primitives --
@@ -185,7 +228,10 @@ in mk {
     - `mkEq`, `mkRefl`, `mkJ` — identity type with J eliminator
 
     ### Universes
-    - `mkU : Int → Tm` — universe at level i
+    - `mkU : (Int | Tm) → Tm` — universe `U(level)`. Accepts either a
+      concrete Int (wrapped via `mkLevelLit`) or a Level-typed Tm
+      directly.
+    - `mkLevelLit : Int → Tm` — builds `suc^n zero` as a Level term.
 
     ### Axiomatized Primitives (§2.1)
     - `mkString`, `mkInt`, `mkFloat`, `mkAttrs`, `mkPath`, `mkFunction`, `mkAny` — type formers
@@ -203,6 +249,7 @@ in mk {
     inherit mkFunext funextTypeTm;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
     inherit mkU;
+    inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit;
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
     inherit mkStrEq;
     inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
@@ -240,8 +287,33 @@ in mk {
       expr = (mkJ mkNat mkZero (mkVar 0) (mkVar 1) mkZero mkRefl).tag;
       expected = "j";
     };
-    "U-tag" = { expr = (mkU 0).tag; expected = "U"; };
-    "U-level" = { expr = (mkU 1).level; expected = 1; };
+    "U-tag" = { expr = (mkU mkLevelZero).tag; expected = "U"; };
+    "U-level-zero" = { expr = (mkU mkLevelZero).level.tag; expected = "level-zero"; };
+    "U-level-suc" = {
+      expr = (mkU (mkLevelSuc mkLevelZero)).level.tag;
+      expected = "level-suc";
+    };
+    "U-level-suc-pred" = {
+      expr = (mkU (mkLevelSuc mkLevelZero)).level.pred.tag;
+      expected = "level-zero";
+    };
+    "U-level-max" = {
+      expr = (mkU (mkLevelMax mkLevelZero mkLevelZero)).level.tag;
+      expected = "level-max";
+    };
+    "level-tag" = { expr = mkLevel.tag; expected = "level"; };
+    "level-zero-tag" = { expr = mkLevelZero.tag; expected = "level-zero"; };
+    "level-suc-tag" = { expr = (mkLevelSuc mkLevelZero).tag; expected = "level-suc"; };
+    "level-suc-pred" = { expr = (mkLevelSuc mkLevelZero).pred.tag; expected = "level-zero"; };
+    "level-max-tag" = { expr = (mkLevelMax mkLevelZero mkLevelZero).tag; expected = "level-max"; };
+    "level-lit-0" = { expr = (mkLevelLit 0).tag; expected = "level-zero"; };
+    "level-lit-1-tag" = { expr = (mkLevelLit 1).tag; expected = "level-suc"; };
+    "level-lit-1-pred" = { expr = (mkLevelLit 1).pred.tag; expected = "level-zero"; };
+    "level-lit-2-pred-tag" = { expr = (mkLevelLit 2).pred.tag; expected = "level-suc"; };
+    "level-lit-negative-clamps-to-zero" = {
+      expr = (mkLevelLit (-3)).tag;
+      expected = "level-zero";
+    };
     "let-tag" = { expr = (mkLet "x" mkNat mkZero (mkVar 0)).tag; expected = "let"; };
     "ann-tag" = { expr = (mkAnn mkZero mkNat).tag; expected = "ann"; };
     "string-tag" = { expr = mkString.tag; expected = "string"; };
@@ -266,30 +338,59 @@ in mk {
     "opaque-lam-fnBox" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat)._fnBox ? _fn; expected = true; };
 
     # Descriptions (indexed)
-    "desc-tag" = { expr = (mkDesc mkUnit).tag; expected = "desc"; };
-    "desc-I" = { expr = (mkDesc mkUnit).I.tag; expected = "unit"; };
+    "desc-tag" = { expr = (mkDesc mkLevelZero mkUnit).tag; expected = "desc"; };
+    "desc-I" = { expr = (mkDesc mkLevelZero mkUnit).I.tag; expected = "unit"; };
+    "desc-k-zero" = {
+      expr = (mkDesc mkLevelZero mkUnit).k.tag;
+      expected = "level-zero";
+    };
+    "desc-k-non-zero" = {
+      expr = (mkDesc (mkLevelSuc mkLevelZero) mkUnit).k.tag;
+      expected = "level-suc";
+    };
     "desc-ret-tag" = { expr = (mkDescRet mkTt).tag; expected = "desc-ret"; };
     "desc-ret-j" = { expr = (mkDescRet mkTt).j.tag; expected = "tt"; };
-    "desc-arg-tag" = { expr = (mkDescArg mkNat (mkDescRet mkTt)).tag; expected = "desc-arg"; };
-    "desc-arg-S" = { expr = (mkDescArg mkNat (mkDescRet mkTt)).S.tag; expected = "nat"; };
+    "desc-arg-tag" = { expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).tag; expected = "desc-arg"; };
+    "desc-arg-S" = { expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).S.tag; expected = "nat"; };
+    "desc-arg-k-zero" = {
+      expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).k.tag;
+      expected = "level-zero";
+    };
+    "desc-arg-k-suc" = {
+      expr = (mkDescArg (mkLevelSuc mkLevelZero) mkNat (mkDescRet mkTt)).k.tag;
+      expected = "level-suc";
+    };
+    "desc-arg-k-max" = {
+      expr = (mkDescArg (mkLevelMax mkLevelZero mkLevelZero)
+              mkNat (mkDescRet mkTt)).k.tag;
+      expected = "level-max";
+    };
     "desc-rec-tag" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).tag; expected = "desc-rec"; };
     "desc-rec-j" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).j.tag; expected = "tt"; };
     "desc-rec-D" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).D.tag; expected = "desc-ret"; };
     "desc-pi-tag" = {
-      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).tag;
+      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).tag;
       expected = "desc-pi";
     };
     "desc-pi-S" = {
-      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).S.tag;
+      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).S.tag;
       expected = "nat";
     };
     "desc-pi-f" = {
-      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).f.tag;
+      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).f.tag;
       expected = "lam";
     };
     "desc-pi-D" = {
-      expr = (mkDescPi mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).D.tag;
+      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).D.tag;
       expected = "desc-ret";
+    };
+    "desc-pi-k-zero" = {
+      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
+      expected = "level-zero";
+    };
+    "desc-pi-k-suc" = {
+      expr = (mkDescPi (mkLevelSuc mkLevelZero) mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
+      expected = "level-suc";
     };
     "mu-tag" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).tag; expected = "mu"; };
     "mu-I" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).I.tag; expected = "unit"; };
@@ -316,12 +417,16 @@ in mk {
       expected = "tt";
     };
     "desc-elim-tag" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).tag;
+      expr = (mkDescElim mkLevelZero (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).tag;
       expected = "desc-elim";
     };
     "desc-elim-scrut" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).scrut.tag;
+      expr = (mkDescElim mkLevelZero (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).scrut.tag;
       expected = "desc-ret";
+    };
+    "desc-elim-k-zero" = {
+      expr = (mkDescElim mkLevelZero (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).k.tag;
+      expected = "level-zero";
     };
     "desc-plus-tag" = {
       expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).tag;
@@ -339,17 +444,40 @@ in mk {
     # Function extensionality postulate
     "funext-tag" = { expr = mkFunext.tag; expected = "funext"; };
     "funext-type-tag" = { expr = funextTypeTm.tag; expected = "pi"; };
-    "funext-type-outer-name" = { expr = funextTypeTm.name; expected = "A"; };
-    "funext-type-outer-domain-tag" = { expr = funextTypeTm.domain.tag; expected = "U"; };
-    "funext-type-outer-domain-level" = { expr = funextTypeTm.domain.level; expected = 0; };
-    "funext-type-b-domain-is-pi" = {
+    "funext-type-outer-name" = { expr = funextTypeTm.name; expected = "j"; };
+    "funext-type-outer-domain-tag" = {
+      expr = funextTypeTm.domain.tag;
+      expected = "level";
+    };
+    # The second binder is `k : Level`, sitting between `j` and `A`.
+    "funext-type-second-binder-name" = {
+      expr = funextTypeTm.codomain.name;
+      expected = "k";
+    };
+    "funext-type-second-binder-domain-tag" = {
       expr = funextTypeTm.codomain.domain.tag;
+      expected = "level";
+    };
+    # A's annotation is `U(j)` with `j = Var 1` (k sits between j and A).
+    "funext-type-A-domain-is-U-of-j" = {
+      expr = funextTypeTm.codomain.codomain.domain.tag;
+      expected = "U";
+    };
+    "funext-type-A-domain-level-references-j" = {
+      expr = funextTypeTm.codomain.codomain.domain.level.tag;
+      expected = "var";
+    };
+    # B's domain is `Π(_:A). U(k)` — a Pi.
+    "funext-type-b-domain-is-pi" = {
+      expr = funextTypeTm.codomain.codomain.codomain.domain.tag;
       expected = "pi";
     };
     "funext-type-innermost-eq" = {
-      # Walk into: A → B → f → g → hyp → body.
+      # Walk into: j → k → A → B → f → g → hyp → body.
       # Body should be an Eq of (Pi a:A. B a) f g.
       expr = funextTypeTm
+        .codomain   # after j
+        .codomain   # after k
         .codomain   # after A
         .codomain   # after B
         .codomain   # after f

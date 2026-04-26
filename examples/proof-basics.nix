@@ -29,7 +29,7 @@ let
   # add(m, n) = NatElim(λ_.Nat, n, λk.λih.S(ih), m)
   # Recurses on first argument: add(0,n) = n, add(S(k),n) = S(add(k,n))
   add = m: n:
-    ind (lam "_" nat (_: nat)) n
+    ind 0 (lam "_" nat (_: nat)) n
       (lam "k" nat (_: lam "ih" nat (ih: succ ih))) m;
 
   # not(b) = BoolElim(λ_.Bool, false, true, b)
@@ -38,13 +38,13 @@ let
 
   # length(xs) = ListElim(Nat, λ_.Nat, 0, λh.λt.λih.S(ih), xs)
   length = xs:
-    listElim nat (lam "_" (listOf nat) (_: nat)) zero
+    listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
       (lam "h" nat (_: lam "t" (listOf nat) (_:
         lam "ih" nat (ih: succ ih)))) xs;
 
   # append(xs, ys) = ListElim(Nat, λ_.List Nat, ys, λh.λt.λih.h::ih, xs)
   append = xs: ys:
-    listElim nat (lam "_" (listOf nat) (_: listOf nat)) ys
+    listElim 0 nat (lam "_" (listOf nat) (_: listOf nat)) ys
       (lam "h" nat (h: lam "t" (listOf nat) (_:
         lam "ih" (listOf nat) (ih: cons nat h ih)))) xs;
 
@@ -127,14 +127,14 @@ in rec {
   # double(4) = 8 — double(0)=0, double(S(k))=S(S(double(k)))
   natElimDouble =
     let
-      double = n: ind (lam "_" nat (_: nat)) zero
+      double = n: ind 0 (lam "_" nat (_: nat)) zero
         (lam "k" nat (_: lam "ih" nat (ih: succ (succ ih)))) n;
     in (checkHoas (eq nat (double (natLit 4)) (natLit 8)) refl).tag == "refl";
 
   # mul(3,4) = 12 — mul(0,n)=0, mul(S(k),n)=add(n,mul(k,n))
   natElimMul =
     let
-      mul = m: n: ind (lam "_" nat (_: nat)) zero
+      mul = m: n: ind 0 (lam "_" nat (_: nat)) zero
         (lam "k" nat (_: lam "ih" nat (ih: add n ih))) m;
     in (checkHoas (eq nat (mul (natLit 3) (natLit 4)) (natLit 12)) refl).tag == "refl";
 
@@ -163,7 +163,7 @@ in rec {
   # sum([1,2,3]) = 6
   listSum =
     let
-      sumList = xs: listElim nat (lam "_" (listOf nat) (_: nat)) zero
+      sumList = xs: listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
         (lam "h" nat (h: lam "t" (listOf nat) (_:
           lam "ih" nat (ih: add h ih)))) xs;
     in (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "refl";
@@ -171,7 +171,7 @@ in rec {
   # map succ [0,1,2] = [1,2,3]
   listMapSucc =
     let
-      mapSucc = xs: listElim nat (lam "_" (listOf nat) (_: listOf nat))
+      mapSucc = xs: listElim 0 nat (lam "_" (listOf nat) (_: listOf nat))
         (nil nat)
         (lam "h" nat (h: lam "t" (listOf nat) (_:
           lam "ih" (listOf nat) (ih: cons nat (succ h) ih)))) xs;
@@ -187,7 +187,7 @@ in rec {
   sumElimLeft =
     let
       scrut = inl nat bool (natLit 5);
-      result = sumElim nat bool (lam "_" (sum nat bool) (_: nat))
+      result = sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
         (lam "n" nat (n: n))
         (lam "b" bool (_: zero))
         scrut;
@@ -197,7 +197,7 @@ in rec {
   sumElimRight =
     let
       scrut = inr nat bool true_;
-      result = sumElim nat bool (lam "_" (sum nat bool) (_: nat))
+      result = sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
         (lam "n" nat (n: n))
         (lam "b" bool (b: boolElim 0 (lam "_" bool (_: nat)) (natLit 1) zero b))
         scrut;

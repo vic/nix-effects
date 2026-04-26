@@ -37,7 +37,7 @@ let
 
   # Helper: addition via NatElim
   add = m: n:
-    ind (lam "_" nat (_: nat)) n
+    ind 0 (lam "_" nat (_: nat)) n
       (lam "k" nat (_: lam "ih" nat (ih: succ ih))) m;
 
 in rec {

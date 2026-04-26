@@ -50,8 +50,9 @@ in {
 
   # Hint resolution: walk to leaf position, classify detail, look up
   # `DArgSort::universe-mismatch` in the hints table. Returns a
-  # non-null string for this chain, so the full resolution path runs.
+  # non-null Hint record for this chain, so the full resolution path
+  # runs; the workload reports `stringLength` of the hint's `.text`.
   hint-resolve-5000 =
     let r = H.resolve deepErr;
-    in if r == null then 0 else builtins.stringLength r;
+    in if r == null then 0 else builtins.stringLength r.text;
 }

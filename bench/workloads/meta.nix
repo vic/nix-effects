@@ -106,6 +106,7 @@ let
 
     # --- tc / e2e ---
     "tc.e2e.tc-test-suite-full"      = { tier = "quick"; };
+    "tc.e2e.tc-test-suite-heavy"     = { tier = "heavy"; };
     "tc.e2e.category-theory-verify"  = { tier = "standard"; };
     "tc.e2e.synthetic-large-proof"   = { tier = "heavy"; };
     "tc.e2e.datatype-macro-big"      = { tier = "quick"; };

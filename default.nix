@@ -229,6 +229,9 @@ let
       materialize = build.materialize;
     };
 
+    # Sugar (opt-in syntax-livability layer — see src/sugar/)
+    sugar = src.sugar;
+
     # API utilities
     inherit api;
   };
@@ -288,7 +291,7 @@ in fx // {
   # nix-effects/{section}/{page}.md for the kleisli-docs multi-project hub.
   mkKleisliDocsContent = pkgs: import ./book/gen/kleisli-docs.nix {
     inherit pkgs lib;
-    nix-effects = fx // { inherit extractDocs; };
+    nix-effects = fx // { inherit extractDocs src; };
   };
 
   tests =
@@ -309,5 +312,9 @@ in fx // {
       failed = inlineFailed;
       # For nix-unit (flake.nix exposes this as the tests output)
       nix-unit = nixUnitTests;
+      # Live HTTP probe of every diag Hint docLink (see file header).
+      docs-resolves = import ./tests/docs-resolves.nix {
+        inherit pkgs lib src;
+      };
     };
 }

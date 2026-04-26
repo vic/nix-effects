@@ -63,7 +63,7 @@ let
   # Nat elimination with constant motive.
   # succ callback receives: k (predecessor) and ih (inductive hypothesis).
   match = resultTy: scrut: { zero, succ }:
-    H.ind (H.lam "_" H.nat (_: resultTy)) zero
+    H.ind 0 (H.lam "_" H.nat (_: resultTy)) zero
       (H.lam "k" H.nat (k: H.lam "ih" resultTy (ih: succ k ih)))
       scrut;
 
@@ -71,7 +71,7 @@ let
   # List elimination with constant motive.
   # cons callback receives: h (head), t (tail), ih (inductive hypothesis).
   matchList = elemTy: resultTy: scrut: { nil, cons }:
-    H.listElim elemTy (H.lam "_" (H.listOf elemTy) (_: resultTy))
+    H.listElim 0 elemTy (H.lam "_" (H.listOf elemTy) (_: resultTy))
       nil
       (H.lam "h" elemTy (h: H.lam "t" (H.listOf elemTy) (t:
         H.lam "ih" resultTy (ih: cons h t ih))))
@@ -80,7 +80,7 @@ let
   # v.matchSum leftTy rightTy resultTy scrut { left = x: body; right = y: body; }
   # Sum elimination with constant motive.
   matchSum = leftTy: rightTy: resultTy: scrut: { left, right }:
-    H.sumElim leftTy rightTy (H.lam "_" (H.sum leftTy rightTy) (_: resultTy))
+    H.sumElim 0 leftTy rightTy (H.lam "_" (H.sum leftTy rightTy) (_: resultTy))
       (H.lam "l" leftTy (l: left l))
       (H.lam "r" rightTy (r: right r))
       scrut;
@@ -92,7 +92,7 @@ let
   # Annotates f with its type so the checker can infer App(f, h).
   map = elemTy: resultTy: f: list:
     let fAnn = H.ann f (H.forall "_" elemTy (_: resultTy)); in
-    H.listElim elemTy (H.lam "_" (H.listOf elemTy) (_: H.listOf resultTy))
+    H.listElim 0 elemTy (H.lam "_" (H.listOf elemTy) (_: H.listOf resultTy))
       (H.nil resultTy)
       (H.lam "h" elemTy (h: H.lam "_" (H.listOf elemTy) (_:
         H.lam "ih" (H.listOf resultTy) (ih:
@@ -104,7 +104,7 @@ let
   # Annotates f with its type so the checker can infer App(App(f, h), ih).
   fold = elemTy: resultTy: init: f: list:
     let fAnn = H.ann f (H.forall "_" elemTy (_: H.forall "_" resultTy (_: resultTy))); in
-    H.listElim elemTy (H.lam "_" (H.listOf elemTy) (_: resultTy))
+    H.listElim 0 elemTy (H.lam "_" (H.listOf elemTy) (_: resultTy))
       init
       (H.lam "h" elemTy (h: H.lam "_" (H.listOf elemTy) (_:
         H.lam "ih" resultTy (ih:
@@ -117,7 +117,7 @@ let
   # Annotates pred with its type so the checker can infer App(pred, h).
   filter = elemTy: pred: list:
     let predAnn = H.ann pred (H.forall "_" elemTy (_: H.bool)); in
-    H.listElim elemTy (H.lam "_" (H.listOf elemTy) (_: H.listOf elemTy))
+    H.listElim 0 elemTy (H.lam "_" (H.listOf elemTy) (_: H.listOf elemTy))
       (H.nil elemTy)
       (H.lam "h" elemTy (h: H.lam "_" (H.listOf elemTy) (_:
         H.lam "ih" (H.listOf elemTy) (ih:

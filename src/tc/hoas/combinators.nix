@@ -34,6 +34,18 @@ in {
     eq = type: lhs: rhs: { _htag = "eq"; inherit type lhs rhs; };
     u = level: { _htag = "U"; inherit level; };
 
+    # `Level` sort and its three constructors at the HOAS surface.
+    # Lets users quantify over universes (`forall "k" level (k: ...)`)
+    # and build level expressions inline (`u (levelMax k1 (levelSuc k2))`).
+    # The `level` field of `u` accepts any of: a Nix-meta `Int` (shimmed
+    # via `mkLevelLit` in the kernel), a HOAS Level term built from
+    # these combinators, or a kernel `Tm` directly — `elaborate` handles
+    # each form via `elaborateLevel`.
+    level = { _htag = "level"; };
+    levelZero = { _htag = "level-zero"; };
+    levelSuc = pred: { _htag = "level-suc"; inherit pred; };
+    levelMax = lhs: rhs: { _htag = "level-max"; inherit lhs rhs; };
+
     # Compound types (sugar for nested sigma/sum — carry structural info
     # for elaborateValue).
     # fields : [ { name; type; } ... ] — sorted by name
@@ -87,16 +99,24 @@ in {
     # `let_ P … let_ B … let_ S … <elim>` Tm shape. The user-facing
     # `boolElim` is derived in the Bool/Unit/Void block below via
     # `descInd` on the plus-coproduct `boolDesc`.
-    ind = motive: base: step: scrut:
+    #
+    # `k` is a universe level — accepts a Nix-meta `Int` (concrete level
+    # baked at macro time), a HOAS Level term (`level`/`levelZero`/
+    # `levelSuc`/`levelMax` or a bound `k_var` from `forall "k" level
+    # (k_var: …)`), or a kernel `Tm` directly. The level threads into
+    # the motive's codomain annotation and into the macro-derived
+    # eliminator's `K` slot; `elaborateLevel` normalises the encoding
+    # at every level-accepting site (`u`, `desc-arg`, `desc-pi`).
+    ind = k: motive: base: step: scrut:
       let
         inherit (self) forall app let_ nat zero succ u NatDT;
-        piMotiveTy = forall "_" nat (_: u 0);
+        piMotiveTy = forall "_" nat (_: u k);
       in
       let_ "P" piMotiveTy motive (P:
       let_ "B" (app P zero) base (B:
-      let_ "S" (forall "k" nat (k:
-                forall "_" (app P k) (_: app P (succ k)))) step (S:
-        app (app (app (app NatDT.elim P) B) S) scrut)));
+      let_ "S" (forall "kArg" nat (kArg:
+                forall "_" (app P kArg) (_: app P (succ kArg)))) step (S:
+        app (app (app (app (NatDT.elim k) P) B) S) scrut)));
 
     # Stable aliases for the kernel-primitive Unit type and its intro.
     # Unit is the bootstrap singleton of the description machinery —
@@ -117,18 +137,18 @@ in {
     sumPrim = L: R: { _htag = "sum-prim"; inherit L R; };
     inlPrim = L: R: v: { _htag = "inl-prim"; inherit L R; term = v; };
     inrPrim = L: R: v: { _htag = "inr-prim"; inherit L R; term = v; };
-    # Kernel-primitive sum-elim. Emitted only by `allHoas`'s `onPlus` so
-    # that the stuck frame under a neutral scrutinee bottoms out in a
+    # Kernel-primitive sum-elim. Emitted only by `allHoasAt`'s `onPlus`
+    # so that the stuck frame under a neutral scrutinee bottoms out in a
     # kernel `ESumElim` rather than re-entering the derived `SumDT.elim`
-    # descInd (whose step itself contains `allHoas` — the two would
+    # descInd (whose step itself contains `allHoasAt` — the two would
     # diverge during quote-under-binder on neutral descInd scrutinees).
     sumElimPrim = left: right: motive: onLeft: onRight: scrut:
       { _htag = "sum-elim-prim"; inherit left right motive onLeft onRight scrut; };
 
-    listElim = A: motive: onNil: onCons: scrut:
+    listElim = k: A: motive: onNil: onCons: scrut:
       let
         inherit (self) forall app let_ listOf nil cons u ListDT;
-        piMotiveTy = forall "_" (listOf A) (_: u 0);
+        piMotiveTy = forall "_" (listOf A) (_: u k);
       in
       let_ "P" piMotiveTy motive (P:
       let_ "N" (app P (nil A)) onNil (N:
@@ -136,17 +156,17 @@ in {
                 forall "t" (listOf A) (tVar:
                 forall "_" (app P tVar) (_:
                   app P (cons A hVar tVar))))) onCons (C:
-        app (app (app (app (app ListDT.elim A) P) N) C) scrut)));
+        app (app (app (app (app (ListDT.elim k) A) P) N) C) scrut)));
 
-    sumElim = A: B: motive: onLeft: onRight: scrut:
+    sumElim = k: A: B: motive: onLeft: onRight: scrut:
       let
         inherit (self) forall app let_ sum inl inr u SumDT;
-        piMotiveTy = forall "_" (sum A B) (_: u 0);
+        piMotiveTy = forall "_" (sum A B) (_: u k);
       in
       let_ "P" piMotiveTy motive (P:
       let_ "L" (forall "a" A (aVar: app P (inl A B aVar))) onLeft (L:
       let_ "R" (forall "b" B (bVar: app P (inr A B bVar))) onRight (R:
-        app (app (app (app (app (app SumDT.elim A) B) P) L) R) scrut)));
+        app (app (app (app (app (app (SumDT.elim k) A) B) P) L) R) scrut)));
 
     j = type: lhs: motive: base: rhs: eq_:
       { _htag = "j"; inherit type lhs motive base rhs; eq = eq_; };
@@ -165,6 +185,11 @@ in {
     # at the index position.
     descI = I: { _htag = "desc"; inherit I; };
     desc = self.descI self.unitPrim;
+    # Universe-polymorphic forms: `descIAt k I` and `descAt k` produce
+    # `desc^k I` / `desc^k ⊤`. The level-omitting `descI`/`desc` default
+    # to level 0 in the elaborator (the prelude shape).
+    descIAt = k: I: { _htag = "desc"; inherit k I; };
+    descAt = k: self.descIAt k self.unitPrim;
 
     muI = I: D: i: { _htag = "mu"; inherit I D i; };
     mu = D: i: self.muI self.unitPrim D i;
@@ -172,20 +197,25 @@ in {
     retI = j: { _htag = "desc-ret"; inherit j; };
     descRet = self.retI self.ttPrim;
 
-    # descArg S (b: T b) — T is a Nix function, b binds a fresh variable.
-    descArg = S: T: { _htag = "desc-arg"; inherit S; body = T; };
+    # descArg k S (b: T b) — universe-polymorphic description argument.
+    # `k` is a universe level (Nix-meta `Int` or HOAS Level term); `S`
+    # inhabits `U(k)`; `T` is a Nix function opening a fresh variable.
+    # The leading-Int shape `descArg 0 Nat T` is the common prelude
+    # form; `descArg 1 (u 0) T` carries a universe as its domain.
+    descArg = k: S: T: { _htag = "desc-arg"; inherit k S; body = T; };
 
     recI = j: D: { _htag = "desc-rec"; inherit j D; };
     descRec = D: self.recI self.ttPrim D;
 
-    piI = S: f: D: { _htag = "desc-pi"; inherit S f D; };
+    # piI k S f D — `pi` at arbitrary index type with leading level.
+    piI = k: S: f: D: { _htag = "desc-pi"; inherit k S f D; };
     # The kernel `desc-pi` infer rule recovers I from the codomain of
     # `tm.f`, so `f` must be inferable. A bare `lam` is checkable-only in
     # the bidirectional kernel; the ⊤-slice alias therefore ann-wraps the
     # constant index function against its explicit type `S → ⊤`, routing
     # synthesis through CHECK where bare canonical forms are accepted.
-    descPi = S: D:
-      self.piI S
+    descPi = k: S: D:
+      self.piI k S
         (self.ann (self.lam "_" S (_: self.ttPrim))
                   (self.forall "_" S (_: self.unitPrim)))
         D;
@@ -194,8 +224,13 @@ in {
 
     descInd = D: motive: step: i: scrut:
       { _htag = "desc-ind"; inherit D motive step i scrut; };
-    descElim = motive: onRet: onArg: onRec: onPi: onPlus: scrut:
-      { _htag = "desc-elim"; inherit motive onRet onArg onRec onPi onPlus scrut; };
+    # `descElim` carries a leading universe level `k` — the universe at
+    # which `onArg` / `onPi` bind their sort `S`. Accepts a Nix-meta
+    # `Int`, a HOAS Level term (`level`/`levelZero`/`levelSuc`/
+    # `levelMax` or a bound `k_var` from `forall "k" level …`), or a
+    # kernel `Tm` directly; `elaborate` normalises via `elaborateLevel`.
+    descElim = k: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
+      { _htag = "desc-elim"; inherit k motive onRet onArg onRec onPi onPlus scrut; };
 
     # First-class binary coproduct of descriptions. `plusI A B : Desc I`
     # where A, B : Desc I share the same index type. Its `interp` reduces to
@@ -230,8 +265,8 @@ in {
     fin     = self.FinDT.T;
     fzero   = m: self.app self.FinDT.fzero m;
     fsuc    = m: k: self.app (self.app self.FinDT.fsuc m) k;
-    finElim = P: Pz: Ps: n: k:
-      self.app (self.app (self.app (self.app (self.app self.FinDT.elim P) Pz) Ps) n) k;
+    finElim = k: P: Pz: Ps: n: x:
+      self.app (self.app (self.app (self.app (self.app (self.FinDT.elim k) P) Pz) Ps) n) x;
 
     # absurdFin0 : (P : U) → Fin 0 → P
     # Fin 0 is vacuous: both constructor payloads carry an `em : Eq (succ m) n`
@@ -247,17 +282,17 @@ in {
           lam forall app fst_ snd_
           nat zero succ j natCaseU
           eq refl
-          muI descInd interpHoas allHoas
+          muI descInd interpHoasAt allHoasAt
           sumPrim sumElimPrim
           descArg retI recI
           finDesc transNat unitPrim ttPrim;
 
         muFam = lam "i" nat (i: muI nat finDesc i);
 
-        fzeroSum = descArg nat (m_: retI (succ m_));
-        fsucSum  = descArg nat (m_: recI m_ (retI (succ m_)));
-        lInterpAt = iArg_: interpHoas nat fzeroSum muFam iArg_;
-        rInterpAt = iArg_: interpHoas nat fsucSum  muFam iArg_;
+        fzeroSum = descArg 0 nat (m_: retI (succ m_));
+        fsucSum  = descArg 0 nat (m_: recI m_ (retI (succ m_)));
+        lInterpAt = iArg_: interpHoasAt 0 nat fzeroSum muFam iArg_;
+        rInterpAt = iArg_: interpHoasAt 0 nat fsucSum  muFam iArg_;
 
         Q = lam "i" nat (iArg: lam "_" (muI nat finDesc iArg) (_:
               forall "_" (eq nat iArg zero) (_: P)));
@@ -274,8 +309,8 @@ in {
             emz;
 
         step = lam "n" nat (nArg:
-               lam "d" (interpHoas nat finDesc muFam nArg) (d:
-               lam "_ih" (allHoas nat finDesc finDesc Q nArg d) (_:
+               lam "d" (interpHoasAt 0 nat finDesc muFam nArg) (d:
+               lam "_ih" (allHoasAt 0 0 nat finDesc finDesc Q nArg d) (_:
                  lam "e0" (eq nat nArg zero) (e0:
                    let
                      lInterp = lInterpAt nArg;
@@ -307,16 +342,16 @@ in {
     natCaseU = A: B:
       let
         inherit (self) ann lam forall nat u unitPrim
-                        ttPrim mu descInd interpHoas allHoas
+                        ttPrim mu descInd interpHoasAt allHoasAt
                         sumPrim sumElimPrim descRet descRec;
         D = nat.D;
         muFam = lam "_i" unitPrim (iArg: mu D iArg);
         motive = lam "_i" unitPrim (_: lam "_x" (mu D _) (_: u 0));
-        lInterpAt = iArg_: interpHoas unitPrim descRet muFam iArg_;
-        rInterpAt = iArg_: interpHoas unitPrim (descRec descRet) muFam iArg_;
+        lInterpAt = iArg_: interpHoasAt 0 unitPrim descRet muFam iArg_;
+        rInterpAt = iArg_: interpHoasAt 0 unitPrim (descRec descRet) muFam iArg_;
         step = lam "_i" unitPrim (iArg:
-               lam "d" (interpHoas unitPrim D muFam iArg) (d:
-               lam "_ih" (allHoas unitPrim D D motive iArg d) (_:
+               lam "d" (interpHoasAt 0 unitPrim D muFam iArg) (d:
+               lam "_ih" (allHoasAt 0 1 unitPrim D D motive iArg d) (_:
                  let
                    lInterp = lInterpAt iArg;
                    rInterp = rInterpAt iArg;
@@ -338,8 +373,8 @@ in {
     vnil    = A: self.app self.VecDT.vnil A;
     vcons   = A: m: x: xs:
       self.app (self.app (self.app (self.app self.VecDT.vcons A) m) x) xs;
-    vecElim = A: P: Pn: Pc: n: xs:
-      self.app (self.app (self.app (self.app (self.app (self.app self.VecDT.elim A) P) Pn) Pc) n) xs;
+    vecElim = k: A: P: Pn: Pc: n: xs:
+      self.app (self.app (self.app (self.app (self.app (self.app (self.VecDT.elim k) A) P) Pn) Pc) n) xs;
 
     # natPredCase A : Nat → U —
     #   `natPredCase A zero ≡ unit`,
@@ -354,17 +389,17 @@ in {
     natPredCase = A:
       let
         inherit (self) ann lam forall app nat u unitPrim
-                        fst_ ttPrim mu descInd interpHoas allHoas
+                        fst_ ttPrim mu descInd interpHoasAt allHoasAt
                         sumPrim sumElimPrim descRet descRec vec;
         D = nat.D;
         muFam = lam "_i" unitPrim (iArg: mu D iArg);
         motive = lam "_i" unitPrim (_: lam "_x" (mu D _) (_: u 0));
         vA = vec A;
-        lInterpAt = iArg_: interpHoas unitPrim descRet muFam iArg_;
-        rInterpAt = iArg_: interpHoas unitPrim (descRec descRet) muFam iArg_;
+        lInterpAt = iArg_: interpHoasAt 0 unitPrim descRet muFam iArg_;
+        rInterpAt = iArg_: interpHoasAt 0 unitPrim (descRec descRet) muFam iArg_;
         step = lam "_i" unitPrim (iArg:
-               lam "d" (interpHoas unitPrim D muFam iArg) (d:
-               lam "_ih" (allHoas unitPrim D D motive iArg d) (_:
+               lam "d" (interpHoasAt 0 unitPrim D muFam iArg) (d:
+               lam "_ih" (allHoasAt 0 1 unitPrim D D motive iArg d) (_:
                  let
                    lInterp = lInterpAt iArg;
                    rInterp = rInterpAt iArg;
@@ -396,7 +431,7 @@ in {
         Pc  = lam "m" nat (mVar: lam "_x" A (_: lam "xs" (app vA mVar) (xsVar:
                 lam "_ih" (app (natPredCase A) mVar) (_: xsVar))));
       in lam "n" nat (n: lam "xs" (app vA (succ n)) (xs:
-           vecElim A P Pn Pc (succ n) xs));
+           vecElim 0 A P Pn Pc (succ n) xs));
 
     # vhead : (A : U) → (n : Nat) → Vec A (succ n) → A.
     # The motive `P n xs = natCaseU unit A n` dispatches on n: at the
@@ -415,7 +450,7 @@ in {
         Pc  = lam "m" nat (mVar: lam "x" A (xVar: lam "_xs" (app vA mVar) (_:
                 lam "_ih" (app (natCaseU unitPrim A) mVar) (_: xVar))));
       in lam "n" nat (n: lam "xs" (app vA (succ n)) (xs:
-           vecElim A P Pn Pc (succ n) xs));
+           vecElim 0 A P Pn Pc (succ n) xs));
 
     # Eq-as-description. The kernel retains `Eq` as a primitive
     # (indexed descriptions need it at the ret-leaf's index-equality
@@ -535,7 +570,7 @@ in {
     # requires no UIP. `sumElimPrim` is the kernel-primitive sum-elim
     # alias (mirrors `sumPrim` / `inlPrim` / `inrPrim`); routing through
     # it avoids the self-embedding divergence the derived `self.sumElim`
-    # would trigger when `allHoas.onPlus` quotes stuck descInd scrutinees
+    # would trigger when `allHoasAt.onPlus` quotes stuck descInd scrutinees
     # under a binder.
     boolDesc =
       let inherit (self) ann plus retI ttPrim desc; in
@@ -593,7 +628,7 @@ in {
           unitPrim ttPrim
           eq j
           sumPrim sumElimPrim inlPrim inrPrim
-          muI descCon descInd interpHoas allHoas
+          muI descCon descInd interpHoasAt allHoasAt
           bool boolDesc;
 
         piMotiveTy = forall "_" bool (_: u k);
@@ -610,8 +645,8 @@ in {
           leafTy = i_: eq unitPrim ttPrim i_;
 
           step = lam "_i" unitPrim (iArg:
-                 lam "d" (interpHoas unitPrim boolDesc boolMuFam iArg) (d:
-                 lam "_ih" (allHoas unitPrim boolDesc boolDesc motive iArg d) (_:
+                 lam "d" (interpHoasAt 0 unitPrim boolDesc boolMuFam iArg) (d:
+                 lam "_ih" (allHoasAt 0 k unitPrim boolDesc boolDesc motive iArg d) (_:
                    let
                      # Sum-elim motive: Q (descCon boolDesc iArg s) for
                      # each Sum inhabitant s. At s = inl/inr e, reduces

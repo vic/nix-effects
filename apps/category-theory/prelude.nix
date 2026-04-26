@@ -38,7 +38,7 @@ let
   # Used both as the verified implementation of `add` and inside proof
   # types, so the kernel sees one canonical definition throughout.
   addHoas = m: n:
-    ind (lam "_" Nat (_: Nat)) n
+    ind 0 (lam "_" Nat (_: Nat)) n
       (lam "_" Nat (_: lam "ih" Nat (ih: H.succ ih)))
       m;
 

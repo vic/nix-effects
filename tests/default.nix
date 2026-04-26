@@ -18,6 +18,9 @@ let
   docsTests = import ./docs-test.nix { inherit lib fx; };
   pipelineTests = import ./pipeline-test.nix { inherit lib fx; };
   scopeTests = import ./scope-test.nix { inherit lib fx; };
+  sugarEffectsTests = import ./sugar-effects-test.nix { inherit lib fx; };
+  sugarTypesTests = import ./sugar-types-test.nix { inherit lib fx; };
+  sugarCompatTests = import ./sugar-compat-test.nix { inherit lib fx; };
 
 in {
   inherit (trampolineTests) pureComputation singleEffect simpleCounter
@@ -177,6 +180,39 @@ in {
 
   inherit (pipelineTests) fullPipelineTest pureOnlyTest;
 
+  inherit (sugarEffectsTests) statePatternDesugared statePatternDo statePatternDiv
+          statePatternEquivState
+          errorPatternDesugared errorPatternDo
+          readerPatternDesugared readerPatternLetM
+          doEmpty doSingleton
+          divAssociativityTest
+          divNotTopLevel divUnderOperators
+          reexportsPresent
+          withSugarTest
+          fullSugarWith operatorOnly combinatorsOnly
+          typesOnly
+          withOperatorsDoesNotActivateDiv
+          namespaceShape;
+
+  inherit (sugarTypesTests) additiveKeysInt additiveKeysAllPrimitives
+          keyValuesPreserved
+          delegationKernelEq delegationGuardEq
+          compositionCheck
+          universePreservation
+          toStringNoPred toStringOnePred toStringTwoPred toStringAllPrimitives
+          wrapUserType
+          recordStructuralIdentity recordWithRefinedField
+          noDiagImports;
+
+  inherit (sugarCompatTests)
+          additiveOnlyPrimitives additiveOnlyRefined
+          kernelDelegation checkDelegation
+          noKernelDiagEmission
+          universePrimitives universeRefined
+          recordKernelIdentity recordKernelIdentityRefined recordKernelIdentityMultiField
+          validationFailureEmits
+          stabilityAudit;
+
   allPass = trampolineTests.allPass && typesTests.allPass && effectsTests.allPass
             && lawTests.allPass && errorPathTests.allPass
             && newEffectsTests.allPass && streamTests.allPass
@@ -186,5 +222,8 @@ in {
             && verifiedFunctionTests.allPass
             && docsTests.allPass
             && pipelineTests.allPass
-            && scopeTests.allPass;
+            && scopeTests.allPass
+            && sugarEffectsTests.allPass
+            && sugarTypesTests.allPass
+            && sugarCompatTests.allPass;
 }

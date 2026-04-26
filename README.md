@@ -372,6 +372,16 @@ Available: `fromList`, `iterate`, `range`, `replicate`, `map`, `filter`,
 `scanl`, `take`, `takeWhile`, `drop`, `fold`, `toList`, `length`, `sum`,
 `any`, `all`, `concat`, `interleave`, `zip`, `zipWith`.
 
+## Sugar
+
+`fx.sugar` is an opt-in syntax layer. `do` and `letM` replace nested
+`bind` chains; `__div` (behind `fx.sugar.operators`) lets you write
+`a / f / g` for left-associative bind pipelines; `fx.sugar.types`
+pre-wraps the zero-ary primitives with a `__functor` that applies a
+predicate via `fx.types.refined`. The kernel doesn't import any of it.
+See [`book/src/sugar.md`](book/src/sugar.md) for usage forms, caveats,
+and forward-compatibility notes.
+
 ## API reference
 
 The `fx` attrset is the entire public API:
@@ -426,6 +436,13 @@ fx.types.decide                         fx.types.decideType
 fx.kernel.pure      fx.kernel.send      fx.kernel.bind
 fx.kernel.pipe      fx.kernel.kleisli
 fx.trampoline.handle
+
+fx.sugar.do         fx.sugar.letM
+fx.sugar.operators.__div
+fx.sugar.types.wrap
+fx.sugar.types.Int  fx.sugar.types.String  fx.sugar.types.Bool
+fx.sugar.types.Float  fx.sugar.types.Path  fx.sugar.types.Null
+fx.sugar.types.Unit  fx.sugar.types.Any
 ```
 
 Types additionally expose:
@@ -513,6 +530,51 @@ nix eval --impure --expr \
 Tests cover algebraic laws (functor, monad), all type constructors
 including dependent and linear types, the trampoline at 100k operations,
 error paths, streams, and HOAS proof verification.
+
+## Documentation MCP server
+
+The full nix-effects manual is published at `https://docs.kleisli.io/nix-effects`,
+and an MCP (Model Context Protocol) server lets AI agents search and fetch it
+programmatically.
+
+- **Explainer:** `https://docs.kleisli.io/mcp` (human-readable; lists tools, resources, and copy-pasteable client configs).
+- **Transport endpoint:** `https://docs.kleisli.io/mcp/transport` (Streamable HTTP per spec 2025-03-26 — POST/GET/DELETE).
+- **Tools:** `search_docs(query)`, `get_page(project, section, page)`, `list_projects()`.
+- **Resources:** `docs://kleisli/{project}/{section}/{page}`.
+
+Diag hints (`fx.diag.hints.hints`) carry a `docLink` field pointing at a
+per-key heading anchor on the diag module page, so AI tooling that
+surfaces hints can deep-link directly to the relevant prose.
+
+### Markdown affordances
+
+Every doc page is also available as raw Markdown — useful for token-efficient
+agent consumption:
+
+- Append `.md` to any path: `…/nix-effects.md`, `…/nix-effects/core-api.md`, `…/nix-effects/core-api/diag.md`.
+- Or send `Accept: text/markdown` on the original path; the server returns `Content-Type: text/markdown` instead of HTML.
+- Doc pages emit a `Link: <{path}.md>; rel="llms-txt-page"` response header pointing at the markdown alternate.
+
+### Connecting from Claude Code
+
+Add the server to `~/.claude/mcp.json` (or per-project `.claude/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "kleisli-docs": {
+      "type": "http",
+      "url": "https://docs.kleisli.io/mcp/transport"
+    }
+  }
+}
+```
+
+Tools then surface as `mcp__kleisli-docs__search_docs`,
+`mcp__kleisli-docs__get_page`, `mcp__kleisli-docs__list_projects`.
+
+For Cursor and generic JSON-RPC client configs, see
+`https://docs.kleisli.io/mcp`.
 
 ## Formal foundations
 

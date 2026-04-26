@@ -19,63 +19,82 @@ let
   inherit (api) mk;
 
   # Tagged-attrset constructor. `_tag = "Position"` is a nominal
-  # marker used by `isPosition`; `tag` is the variant discriminator.
-  mkPos = tag: extra: { _tag = "Position"; inherit tag; } // extra;
+  # marker used by `isPosition`; `tag` is the variant discriminator;
+  # `segment` is the rendered path label. Keeping the segment on the
+  # Position itself collapses `renderSegment` to an O(1) field read
+  # and removes the ordering-sensitive `if/else-if` cascade, whose
+  # per-hop cost used to scale with the branch position of the
+  # matching tag.
+  mkPos = tag: segment: extra:
+    { _tag = "Position"; inherit tag segment; } // extra;
 
   # Positions naming sub-locations inside the five Desc constructors.
-  DArgSort = mkPos "DArgSort" {};
-  DArgBody = mkPos "DArgBody" {};
-  DPiSort = mkPos "DPiSort" {};
-  DPiFn   = mkPos "DPiFn" {};
-  DPiBody = mkPos "DPiBody" {};
-  DRetIndex = mkPos "DRetIndex" {};
-  DRecIndex = mkPos "DRecIndex" {};
-  DRecTail = mkPos "DRecTail" {};
-  DPlusL = mkPos "DPlusL" {};
-  DPlusR = mkPos "DPlusR" {};
+  DArgLevel = mkPos "DArgLevel" "arg.k" {};
+  DArgSort  = mkPos "DArgSort"  "arg.S" {};
+  DArgBody  = mkPos "DArgBody"  "arg.T" {};
+  DPiLevel  = mkPos "DPiLevel"  "pi.k"  {};
+  DPiSort   = mkPos "DPiSort"   "pi.S"  {};
+  DPiFn     = mkPos "DPiFn"     "pi.f"  {};
+  DPiBody   = mkPos "DPiBody"   "pi.T"  {};
+  DElimLevel = mkPos "DElimLevel" "elim.k" {};
+  DRetIndex = mkPos "DRetIndex" "ret.j" {};
+  DRecIndex = mkPos "DRecIndex" "rec.j" {};
+  DRecTail  = mkPos "DRecTail"  "rec.D" {};
+  DPlusL    = mkPos "DPlusL"    "plus.L" {};
+  DPlusR    = mkPos "DPlusR"    "plus.R" {};
 
   # Positions naming sub-locations in raw MLTT structure (outside Desc).
-  PiDom = mkPos "PiDom" {};
-  PiCod = mkPos "PiCod" {};
-  SigmaFst = mkPos "SigmaFst" {};
-  SigmaSnd = mkPos "SigmaSnd" {};
-  AnnTerm = mkPos "AnnTerm" {};
-  AnnType = mkPos "AnnType" {};
-  MuUnroll = mkPos "MuUnroll" {};
-  AppHead = mkPos "AppHead" {};
-  AppArg = mkPos "AppArg" {};
+  PiDom    = mkPos "PiDom"    "Π.dom"   {};
+  PiCod    = mkPos "PiCod"    "Π.cod"   {};
+  SigmaFst = mkPos "SigmaFst" "Σ.fst"   {};
+  SigmaSnd = mkPos "SigmaSnd" "Σ.snd"   {};
+  AnnTerm  = mkPos "AnnTerm"  "ann.term" {};
+  AnnType  = mkPos "AnnType"  "ann.type" {};
+  MuUnroll = mkPos "MuUnroll" "μ"       {};
+  AppHead  = mkPos "AppHead"  "app.head" {};
+  AppArg   = mkPos "AppArg"   "app.arg"  {};
 
   # Positions naming sub-locations inside eliminator rules — shared
   # across nat-elim, list-elim, sum-elim, desc-elim, desc-ind, j.
-  Scrut = mkPos "Scrut" {};
-  Motive = mkPos "Motive" {};
+  Scrut  = mkPos "Scrut"  "scrut"  {};
+  Motive = mkPos "Motive" "motive" {};
 
   # Positions naming sub-locations inside the Mu-layer operations
   # (desc-con, desc-ind).
-  MuDesc = mkPos "MuDesc" {};
-  MuIndex = mkPos "MuIndex" {};
-  MuPayload = mkPos "MuPayload" {};
+  MuDesc    = mkPos "MuDesc"    "con.D" {};
+  MuIndex   = mkPos "MuIndex"   "con.i" {};
+  MuPayload = mkPos "MuPayload" "con.d" {};
 
   # Positions naming sub-locations inside the `j` eliminator.
-  JType = mkPos "JType" {};
-  JLhs = mkPos "JLhs" {};
-  JRhs = mkPos "JRhs" {};
-  JEq = mkPos "JEq" {};
+  JType = mkPos "JType" "J.A"  {};
+  JLhs  = mkPos "JLhs"  "J.a"  {};
+  JRhs  = mkPos "JRhs"  "J.b"  {};
+  JEq   = mkPos "JEq"   "J.eq" {};
 
   # Opaque-lam's type annotation sub-position.
-  OpaqueType = mkPos "OpaqueType" {};
+  OpaqueType = mkPos "OpaqueType" "opaque.type" {};
+
+  # Positions naming sub-locations inside Level expressions.
+  LevelSucPred = mkPos "LevelSucPred" "suc.pred" {};
+  LevelMaxLhs  = mkPos "LevelMaxLhs"  "max.L"    {};
+  LevelMaxRhs  = mkPos "LevelMaxRhs"  "max.R"    {};
+
+  # Position naming the level argument of `U(k)`.
+  ULevel = mkPos "ULevel" "U.k" {};
 
   # Parameterised positions for value-side descent through records,
-  # lists, and tagged unions.
-  Field = name: mkPos "Field" { inherit name; };
-  Elem = idx: mkPos "Elem" { inherit idx; };
-  Tag = name: mkPos "Tag" { inherit name; };
+  # lists, and tagged unions. Segment is computed from the parameter
+  # at construction time; positions are long-lived per descent frame,
+  # so the cost is amortised.
+  Field = name: mkPos "Field" ("." + name)               { inherit name; };
+  Elem  = idx:  mkPos "Elem"  ("[" + toString idx + "]") { inherit idx; };
+  Tag   = name: mkPos "Tag"   ("#" + name)               { inherit name; };
 
   # Parameterised position naming a case-handler inside an eliminator:
   # "zero"/"succ" (nat-elim), "nil"/"cons" (list-elim), "inl"/"inr"
   # (sum-elim), "base" (j), "onRet"/"onArg"/"onRec"/"onPi"/"onPlus"
   # (desc-elim), "step" (desc-ind).
-  Case = name: mkPos "Case" { inherit name; };
+  Case = name: mkPos "Case" ("@" + name) { inherit name; };
 
   # Structural equality works because Nix compares attrsets by
   # contents. `eq` is exposed for readers who prefer an explicit
@@ -88,42 +107,10 @@ let
     && x ? tag;
 
   # Render a single position as a short human-readable segment.
-  # Names are description-centric: "arg.S", "plus.L", ".age".
-  renderSegment = pos:
-    if pos.tag == "DArgSort" then "arg.S"
-    else if pos.tag == "DArgBody" then "arg.T"
-    else if pos.tag == "DPiSort" then "pi.S"
-    else if pos.tag == "DPiFn" then "pi.f"
-    else if pos.tag == "DPiBody" then "pi.T"
-    else if pos.tag == "DRetIndex" then "ret.j"
-    else if pos.tag == "DRecIndex" then "rec.j"
-    else if pos.tag == "DRecTail" then "rec.D"
-    else if pos.tag == "DPlusL" then "plus.L"
-    else if pos.tag == "DPlusR" then "plus.R"
-    else if pos.tag == "PiDom" then "Π.dom"
-    else if pos.tag == "PiCod" then "Π.cod"
-    else if pos.tag == "SigmaFst" then "Σ.fst"
-    else if pos.tag == "SigmaSnd" then "Σ.snd"
-    else if pos.tag == "AnnTerm" then "ann.term"
-    else if pos.tag == "AnnType" then "ann.type"
-    else if pos.tag == "MuUnroll" then "μ"
-    else if pos.tag == "AppHead" then "app.head"
-    else if pos.tag == "AppArg" then "app.arg"
-    else if pos.tag == "Scrut" then "scrut"
-    else if pos.tag == "Motive" then "motive"
-    else if pos.tag == "MuDesc" then "con.D"
-    else if pos.tag == "MuIndex" then "con.i"
-    else if pos.tag == "MuPayload" then "con.d"
-    else if pos.tag == "JType" then "J.A"
-    else if pos.tag == "JLhs" then "J.a"
-    else if pos.tag == "JRhs" then "J.b"
-    else if pos.tag == "JEq" then "J.eq"
-    else if pos.tag == "OpaqueType" then "opaque.type"
-    else if pos.tag == "Field" then "." + pos.name
-    else if pos.tag == "Elem" then "[" + toString pos.idx + "]"
-    else if pos.tag == "Tag" then "#" + pos.name
-    else if pos.tag == "Case" then "@" + pos.name
-    else throw "diag.positions: unknown tag ${pos.tag}";
+  # Names are description-centric: "arg.S", "plus.L", ".age". The
+  # segment is carried as a field on the Position itself so rendering
+  # is a single attribute read, independent of the alphabet's size.
+  renderSegment = pos: pos.segment;
 
 in mk {
   doc = ''
@@ -150,8 +137,9 @@ in mk {
   '';
   value = {
     inherit
-      DArgSort DArgBody
-      DPiSort DPiFn DPiBody
+      DArgLevel DArgSort DArgBody
+      DPiLevel DPiSort DPiFn DPiBody
+      DElimLevel
       DRetIndex
       DRecIndex DRecTail
       DPlusL DPlusR
@@ -164,6 +152,7 @@ in mk {
       MuDesc MuIndex MuPayload
       JType JLhs JRhs JEq
       OpaqueType
+      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel
       Field Elem Tag Case
       eq renderSegment isPosition;
   };
@@ -234,6 +223,10 @@ in mk {
       expr = renderSegment DArgSort;
       expected = "arg.S";
     };
+    "render-DArgLevel" = {
+      expr = renderSegment DArgLevel;
+      expected = "arg.k";
+    };
     "render-DArgBody" = {
       expr = renderSegment DArgBody;
       expected = "arg.T";
@@ -241,6 +234,10 @@ in mk {
     "render-DPiFn" = {
       expr = renderSegment DPiFn;
       expected = "pi.f";
+    };
+    "render-DPiLevel" = {
+      expr = renderSegment DPiLevel;
+      expected = "pi.k";
     };
     "render-DPlusL" = {
       expr = renderSegment DPlusL;
@@ -293,6 +290,22 @@ in mk {
     "render-OpaqueType" = {
       expr = renderSegment OpaqueType;
       expected = "opaque.type";
+    };
+    "render-LevelSucPred" = {
+      expr = renderSegment LevelSucPred;
+      expected = "suc.pred";
+    };
+    "render-LevelMaxLhs" = {
+      expr = renderSegment LevelMaxLhs;
+      expected = "max.L";
+    };
+    "render-LevelMaxRhs" = {
+      expr = renderSegment LevelMaxRhs;
+      expected = "max.R";
+    };
+    "render-ULevel" = {
+      expr = renderSegment ULevel;
+      expected = "U.k";
     };
     "render-Case" = {
       expr = renderSegment (Case "zero");

@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-26
+
 ### Headline changes
+
+#### Kernel
+
+- **Universe-polymorphic descriptions and universes.** `Desc^k I`,
+  `U(k)`, `descArg^k`, `descPi^k`, `descElim^k` carry an explicit
+  universe level `k : Level`. The Tarski `Level` sort
+  (`zero` / `suc` / `max`) inhabits `U(0)`; `convLevel` normalises
+  level expressions modulo idempotence of `max`, distribution of
+  `suc`, and zero absorption before comparing structurally
+- **Conversion fast-paths.** Π-η reduction (`λx. f x ≡ f`) with
+  `freshVar` sharing across both sides of `convVal`, plus a
+  `convLevel a == b` syntactic-equality short-circuit
+- **Description-of-descriptions.** `descDesc : Π(k:Level). Desc ⊤`
+  describes descriptions themselves at any level. The `iso(D)`
+  theorem is stateable in the kernel via the right-associated Σ
+  shape `Π(k:Level). Σ(to). Σ(from). Σ(toFrom). fromTo`, and
+  `from(to D) ≡ D` reduces structurally on prelude descriptions
+
+#### Performance
+
+- The representative cons-list construction workload is
+  alloc-neutral against the 0.9.0 baseline (primOpCalls ±0‰; sets
+  −26.6‰), and the full quick-tier alloc gate passes
+
+#### Tooling and surface
 
 - **Dual-metric bench harness** (`bench/`). `bench-run` samples each
   workload N times and records `NIX_SHOW_STATS` allocation counters
@@ -49,6 +76,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Kernel — Level sort
+
+- `Level` sort with `mkLevel`, `mkLevelZero`, `mkLevelSuc`,
+  `mkLevelMax`, `mkLevelLit n` term constructors and `vLevel*` value
+  mirrors. `convLevel` normaliser modulo idempotence, distribution of
+  `suc`, zero absorption, and sorted-spine `max`, plus an `a == b`
+  syntactic-equality fast-path
+- `vLevelMaxOpt` — drop-zero-if-dominated optimisation for
+  `vLevelMax`, applied in `descInd` `K_eff` reconstruction
+- `reifyLevel` — closes the kernel↔HOAS round-trip for polymorphic
+  levels
+
+#### Kernel — Universe-polymorphic primitives
+
+- `descDesc : Π(k:Level). Desc ⊤` — kernel-internal description of
+  descriptions, threaded for the `iso(D)` weak-levitation theorem
+- Universe-polymorphic `descElim` (leading `K : Level` slot matching
+  the description's level) and heterogeneous `funext`
+  (`Π(j:Level). Π(k:Level)` with decoupled domain/codomain levels)
+- `checkDescAtAnyLevel` — bidirectional bridge that infers the
+  description's universe level from a checked target type before
+  delegating to the level-indexed description CHECK rules
+- Π-η conversion with `freshVar` sharing across both sides of
+  `convVal`
+
+#### Tooling and surface
+
 - `datatypeI name I consList` / `datatypePI name params indexFn mkCons`
   with `conI` / `recFieldAt` spec constructors; `FinDT` / `VecDT` /
   `EqDT` scope bindings
@@ -64,21 +118,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bench runners pin `NIX_PATH=nixpkgs=${pkgs.path}` to the
-  flake-locked store path; `shell.nix` pins its own `pkgs` to
-  `./nixpkgs.nix` so shell-built and `nix build`-built derivations
-  share one Nix version
-- `open-regressions` audit is data-driven: `Perf-regression:` trailers
-  are classified RECOVERED / OPEN / UNMEASURED by consulting the live
-  gate
+- **Breaking:** description and universe constructors take a leading
+  `Level` slot. `vDesc`, `vDescArg`, `vDescPi`, `vU`, `mkDesc`,
+  `mkDescArg`, `mkDescPi`, `mkDescElim`, `mkU` accept a `Level`
+  Val/Tm; integer literals must be wrapped explicitly via
+  `mkLevelZero` / `mkLevelLit n` (or `vLevelZero` / `vLevelSuc
+  vLevelZero` for the common 0/1 cases)
+- `StrEq` INFER rule returns the derived `H.bool`; `reifyType`
+  recognises the plus-coproduct mu shape and maps back to `H.bool`
+- Fin / Vec / Eq preludes in `hoas/combinators.nix` are
+  η-expanded forwarders over macro outputs; `absurdFin0` discharges
+  `Fin 0` via direct `J`-transport through `natCaseU`
 - `readSrc` (`default.nix`) recurses into subdirectories uniformly
   in both split-module and plain-namespace modes; every output is
   `api.mk`-wrapped
-- `StrEq` INFER rule returns the derived `H.bool`; `reifyType`
-  recognises the plus-coproduct mu shape and maps back to `H.bool`
-- Fin / Vec / Eq preludes in `hoas/combinators.nix` are now
-  η-expanded forwarders over macro outputs; `absurdFin0` discharges
-  `Fin 0` via direct `J`-transport through `natCaseU`
 
 ### Removed
 
@@ -88,19 +141,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aliases `boolPrim` / `truePrim_` / `falsePrim_` / `voidPrim` /
   `absurdPrim` / `boolElimPrim`; dead helpers `natDisc` /
   `noConfSuccZero` / `symNat`
-
-### Fixed
-
-- `finalize-calibrate.nix` preserves `allocNoiseLimited` across
-  recalibration (was silently dropped)
-- `ListOf.verify` delegates to `elemType.validateAt` for per-element
-  blame instead of flattening records to a single effect
-- `Record.verify` threads `path ++ [field]` through `validateAt` so
-  nested blame no longer collapses to the leaf type name
-- `effects.tests` and `tc.e2e.category-theory-verify` moved to
-  `noiseLimited` + `allocNoiseLimited`. Both forced whole-test-tree
-  attrsets whose counts grow with unrelated feature additions;
-  `bench-lint-workloads` catches the class of misconfiguration
 
 ## [0.9.0] - 2026-04-18
 

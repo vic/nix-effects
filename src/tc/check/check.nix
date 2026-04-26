@@ -45,7 +45,13 @@ let
   # plain variable reference, eliminating the repeated lookup in deep
   # rule-descent loops.
   bindP = self.bindP;
-  bindPChain = self.bindPChain;
+
+  # Idempotent `vLevelMax` mirroring `check/type.nix`'s local helper.
+  # Duplicated to avoid a module-fixpoint cycle through `self`.
+  vLevelMaxOpt = a: b:
+    if a.tag == "VLevelZero" then b
+    else if b.tag == "VLevelZero" then a
+    else V.vLevelMax a b;
 in {
   scope = {
     # Build a 1-layer non-dependent domain chain from a single domain Val.
@@ -53,10 +59,12 @@ in {
 
     checkMotive = ctx: motTm: chain:
       if chain == null then
-        # Innermost body: must inhabit some universe. `checkType` accepts
-        # any universe level (via `checkTypeLevel`'s fallback), supporting
-        # large elimination.
-        self.checkType ctx motTm
+        # Innermost body: must inhabit some universe — delegate to
+        # `checkTypeLevel` which accepts any universe level and carries
+        # the level back out. The level threads up through the lam
+        # wrappers so eliminators that care about the motive's return
+        # universe (desc-ind's allTy) can read it off the result.
+        self.checkTypeLevel ctx motTm
       else if motTm.tag == "lam" then
         let
           dom = chain.head;
@@ -66,8 +74,9 @@ in {
           # lets the next layer's domain reference the outer binder.
           freshV = V.freshVar ctx.depth;
           restChain = chain.tail freshV;
-        in bind (self.checkMotive ctx' motTm.body restChain) (bodyTm:
-          pure (T.mkLam motTm.name (Q.quote ctx.depth dom) bodyTm))
+        in bind (self.checkMotive ctx' motTm.body restChain) (body:
+          pure { term = T.mkLam motTm.name (Q.quote ctx.depth dom) body.term;
+                 level = body.level; })
       else
         # Non-lambda motive: infer a Π-chain matching the expected
         # domains, then validate the innermost codomain is a universe.
@@ -86,7 +95,7 @@ in {
             go = rTy: ch: d:
               if ch == null then
                 if rTy.tag == "VU"
-                then pure result.term
+                then pure { term = result.term; level = rTy.level; }
                 else motiveErr "eliminator motive must return a type"
                   { tag = "U"; } (Q.quote d rTy)
               else if rTy.tag != "VPi"
@@ -241,19 +250,49 @@ in {
         bindP P.DRetIndex (self.check ctx tm.j ty.I) (jTm:
           pure (T.mkDescRet jTm))
 
-      # desc-arg checked against Desc I — S : U(0), then the body T is
-      # a Desc I in the context extended by `_ : S` (T is the closure
-      # body, not a lambda; the binding is materialised at eval time
-      # via `mkClosure env tm.T`). Sub-delegations are wrapped in
-      # `bindP` so a sub-term failure inherits the descent coordinate
-      # (`arg.S` or `arg.T`) at the caller site, even when the sub
-      # rule fall-through emits a generic "type mismatch".
+      # desc-arg checked against Desc^L I — S : U(k) under the leading
+      # Level `k`, then the body T is a Desc^L I in the context
+      # extended by `_ : S` (T is the closure body, not a lambda; the
+      # binding is materialised at eval time via `mkClosure env tm.T`).
+      # Sub-delegations are wrapped in `bindP` so a sub-term failure
+      # inherits the descent coordinate (`arg.k`, `arg.S`, or `arg.T`)
+      # at the caller site.
+      #
+      # `Desc^L I` is the type of homogeneous-L descriptions: every
+      # `descArg` / `descPi` constructor inside must bind its sort at
+      # exactly level L. CHECK propagates `ty` (= `Desc^L I`) into T
+      # so any nested arg / pi constructors recurse through this same
+      # rule and inherit the equality constraint. The local `kVal ≡ L`
+      # check rejects mismatched constructors directly: `descArg 0 nat
+      # (s: descRet)` against `Desc^1` is rejected (`0 ≠ 1`), and
+      # `descArg 1 nat (s: descRet)` against `Desc^0` is rejected
+      # (`1 ≠ 0`). The eliminator (`desc-elim`) relies on this
+      # invariant — its case bodies bind their sort at the leading
+      # `K` slot, and that slot is checked against `sTy.level` so
+      # the static return type matches the runtime scrutinee.
       else if t == "desc-arg" && ty.tag == "VDesc" then
-        bindP P.DArgSort (self.check ctx tm.S (V.vU 0)) (sTm:
-          let sVal = E.eval ctx.env sTm;
-              ctx' = self.extend ctx "_" sVal;
-          in bindP P.DArgBody (self.check ctx' tm.T (V.vDesc ty.I)) (tTm:
-            pure (T.mkDescArg sTm tTm)))
+        let
+          sortAt = kVal:
+            bindP P.DArgSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+              let sVal = E.eval ctx.env sTm;
+                  ctx' = self.extend ctx "_" sVal;
+              in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
+                if C.convLevel kVal ty.level
+                then pure (T.mkDescArg tm.k sTm tTm)
+                else send "typeError" {
+                  error = D.mkKernelError {
+                    position = P.DArgLevel;
+                    rule     = "desc-arg";
+                    msg      = "desc-arg: argument level must equal description level";
+                    expected = Q.quote ctx.depth ty.level;
+                    got      = Q.quote ctx.depth kVal;
+                  };
+                }));
+        in
+          if tm.k.tag == "level-zero"
+          then sortAt V.vLevelZero
+          else bindP P.DArgLevel (self.check ctx tm.k V.vLevel) (kTm:
+            sortAt (E.eval ctx.env kTm))
 
       # desc-rec checked against Desc I — j : I picks the recursive
       # child's index, and the tail D : Desc I continues the description.
@@ -261,23 +300,46 @@ in {
       # delegations so failures carry the descent coordinate.
       else if t == "desc-rec" && ty.tag == "VDesc" then
         bindP P.DRecIndex (self.check ctx tm.j ty.I) (jTm:
-          bindP P.DRecTail (self.check ctx tm.D (V.vDesc ty.I)) (dTm:
+          bindP P.DRecTail (self.check ctx tm.D ty) (dTm:
             pure (T.mkDescRec jTm dTm)))
 
-      # desc-pi checked against Desc I — S : U(0), f : S → I selects
-      # the index per branch, and the tail D : Desc I continues. f's Pi
-      # type is built with a non-dependent codomain quoting ty.I at the
-      # closure-body depth. Three sub-delegations: `DPiSort` for the
-      # domain sort, `DPiFn` for the index selector, `DPiBody` for the
-      # tail description.
+      # desc-pi checked against Desc^L I — S : U(k), f : S → I selects
+      # the index per branch, and the tail D : Desc^L I continues. f's
+      # Pi type is built with a non-dependent codomain quoting ty.I at
+      # the closure-body depth. Four sub-delegations: `DPiLevel` for
+      # the level argument, `DPiSort` for the domain sort, `DPiFn` for
+      # the index selector, `DPiBody` for the tail description.
+      #
+      # Like `desc-arg`, soundness requires `kVal ≡ L`: every
+      # `descPi` constructor inside `Desc^L I` binds its sort at
+      # exactly level L. The recursive check on the tail `D : Desc^L
+      # I` propagates the same constraint downward. See the desc-arg
+      # rule for full rationale.
       else if t == "desc-pi" && ty.tag == "VDesc" then
-        bindP P.DPiSort (self.check ctx tm.S (V.vU 0)) (sTm:
-          let sVal = E.eval ctx.env sTm;
-              fTy = V.vPi "_" sVal (V.mkClosure ctx.env
-                (Q.quote (ctx.depth + 1) ty.I));
-          in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
-            bindP P.DPiBody (self.check ctx tm.D (V.vDesc ty.I)) (dTm:
-              pure (T.mkDescPi sTm fTm dTm))))
+        let
+          sortAt = kVal:
+            bindP P.DPiSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+              let sVal = E.eval ctx.env sTm;
+                  fTy = V.vPi "_" sVal (V.mkClosure ctx.env
+                    (Q.quote (ctx.depth + 1) ty.I));
+              in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
+                bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
+                  if C.convLevel kVal ty.level
+                  then pure (T.mkDescPi tm.k sTm fTm dTm)
+                  else send "typeError" {
+                    error = D.mkKernelError {
+                      position = P.DPiLevel;
+                      rule     = "desc-pi";
+                      msg      = "desc-pi: argument level must equal description level";
+                      expected = Q.quote ctx.depth ty.level;
+                      got      = Q.quote ctx.depth kVal;
+                    };
+                  })));
+        in
+          if tm.k.tag == "level-zero"
+          then sortAt V.vLevelZero
+          else bindP P.DPiLevel (self.check ctx tm.k V.vLevel) (kTm:
+            sortAt (E.eval ctx.env kTm))
 
       # desc-plus checked against Desc I — both summands share the same
       # index type. Mirrors the desc-ret/arg/rec/pi CHECK rules so that
@@ -288,8 +350,8 @@ in {
       # `A` to be inferable, which fails for ret-only summands.
       # `bindP P.DPlusL` / `P.DPlusR` tag the two summand sub-checks.
       else if t == "desc-plus" && ty.tag == "VDesc" then
-        bindP P.DPlusL (self.check ctx tm.A (V.vDesc ty.I)) (aTm:
-          bindP P.DPlusR (self.check ctx tm.B (V.vDesc ty.I)) (bTm:
+        bindP P.DPlusL (self.check ctx tm.A ty) (aTm:
+          bindP P.DPlusR (self.check ctx tm.B ty) (bTm:
             pure (T.mkDescPlus aTm bTm)))
 
       # desc-con checked against Mu — trampolined for deep recursive
@@ -311,8 +373,9 @@ in {
       # type at each layer is `interp I D μD layer.i`.
       else if t == "desc-con" && ty.tag == "VMu" then
         let iTyVal = ty.I;
-        in bind (self.check ctx tm.D (V.vDesc iTyVal)) (dTm:
-          let dVal = E.eval ctx.env dTm;
+        in bind (self.checkDescAtAnyLevel ctx tm.D iTyVal) (dInfo:
+          let dTm = dInfo.term;
+              dVal = E.eval ctx.env dTm;
               muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                 (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
           in
@@ -426,11 +489,20 @@ in {
                   ) (pure baseTm) (builtins.genList (x: x) n)))))
 
       # Sub rule (§7.4): fall through to synthesis, with cumulativity
-      # for universes (§8.3: VU(i) ≤ VU(j) when i ≤ j).
+      # for universes (§8.3: VU(i) ≤ VU(j) when i ≤ j). With
+      # Level-valued universes, cumulativity is `max inferred ty = ty`
+      # — i.e. the Level normaliser can absorb `inferred` into `ty`
+      # without changing it. `convLevel` does the canonicalise-and-
+      # compare once; callers ignore the intermediate `vLevelMax`.
+      # Fast-path: when `inferred.level` is the `VLevelZero` singleton,
+      # cumulativity holds against any `ty.level` (0 ≤ anything) — no
+      # normaliser pipeline needed.
       else
         bind (self.infer ctx tm) (result:
           let inferredTy = result.type; in
-          if inferredTy.tag == "VU" && ty.tag == "VU" && inferredTy.level <= ty.level
+          if inferredTy.tag == "VU" && ty.tag == "VU"
+             && (inferredTy.level.tag == "VLevelZero"
+                 || C.convLevel (V.vLevelMax inferredTy.level ty.level) ty.level)
           then pure result.term
           else if C.conv ctx.depth inferredTy ty
           then pure result.term

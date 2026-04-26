@@ -2,7 +2,7 @@
 #
 # Public export assembly. `self` is the disjoint-union fixpoint of
 # `combinators.nix` (kernel-primitive HOAS nodes + binding forms +
-# descriptions + eliminator wrappers), `desc.nix` (interpHoas / allHoas
+# descriptions + eliminator wrappers), `desc.nix` (interpHoasAt / allHoasAt
 # helpers + prelude descriptions), `datatype.nix` (datatype macro +
 # prelude instances + surface forwarders), and `elaborate.nix` (HOAS → Tm
 # elaborator + kernel-checker convenience wrappers); `partTests` is the
@@ -81,6 +81,12 @@ api.mk {
     inherit (self)
       nat bool unit void string int_ float_ attrs path function_ any listOf sum eq u
       record maybe variant;
+    # Level sort and its constructors. `level` is the universe-level
+    # type former (inhabits U(0)); `levelZero`/`levelSuc`/`levelMax`
+    # build Level expressions that flow into `u`/`descArg`/`descPi`'s
+    # level slots. Bound Level variables come from
+    # `forall "k" level (k_var: …)`.
+    inherit (self) level levelZero levelSuc levelMax;
     # Binding
     inherit (self) forall sigma lam let_;
     # Terms
@@ -94,10 +100,10 @@ api.mk {
     # `descI`/`retI`/`recI`/`piI`/`muI` build `Desc I` / `μ I D i` at an
     # arbitrary index type; `desc`/`descRet`/`descRec`/`descPi`/`mu` are
     # ⊤-slice aliases that specialise I to `Unit`.
-    inherit (self) descI desc muI mu retI recI piI
+    inherit (self) descI desc descIAt descAt muI mu retI recI piI
                    descRet descArg descRec descPi descCon descInd descElim;
     # Description-level helpers and prelude descriptions
-    inherit (self) interpHoas allHoas natDesc listDesc sumDesc natDescTm;
+    inherit (self) interpHoasAt allHoasAt natDesc listDesc sumDesc natDescTm descDesc iso;
     # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at
     # `Fin 0` (discharged via `absurdFin0`).
     inherit (self) finDesc fin fzero fsuc finElim absurdFin0;
@@ -117,7 +123,7 @@ api.mk {
       con conI
       datatype datatypeI datatypeP datatypePI;
     # Elaboration
-    inherit (self) elaborate elab;
+    inherit (self) elaborate elab reifyLevel;
     # HOAS surface → SourceMap walker, and the pair-producing `elab2`
     # that the diagnostic shell consumes.
     inherit (self) sourceMapOf elab2;

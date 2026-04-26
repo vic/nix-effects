@@ -25,9 +25,18 @@ let
   docs = nix-effects.extractDocs;
   bookSrc = ../src;
 
+  # mtime data is optional; absent → null → front-matter mtime omitted.
+  bookMtimes =
+    let f = bookSrc + "/mtimes.json";
+    in if builtins.pathExists f
+       then builtins.fromJSON (builtins.readFile f)
+       else {};
+
+  mtimeForBookFile = relPath: bookMtimes.${relPath} or null;
+
   # Add YAML front matter to markdown content.
   # Strips leading "# Title\n" from body if present (since title is in front matter).
-  addFrontMatter = title: body:
+  addFrontMatter = { title, body, mtime ? null }:
     let
       # Strip leading "# Title\n\n" from body to avoid duplicate heading
       lines = lib.splitString "\n" body;
@@ -43,8 +52,9 @@ let
               else rest;
           in lib.concatStringsSep "\n" trimmed
         else body;
+      mtimeLine = if mtime != null then "mtime: ${toString mtime}\n" else "";
     in
-    "---\ntitle: \"${title}\"\n---\n\n${strippedBody}";
+    "---\ntitle: \"${title}\"\n${mtimeLine}---\n\n${strippedBody}";
 
   # Render an API module page with front matter.
   renderApiPage = title: node:
@@ -60,7 +70,7 @@ let
 
       body = lib.concatStringsSep "" (lib.mapAttrsToList renderEntry entries);
     in
-    addFrontMatter title "${moduleDoc}${body}";
+    addFrontMatter { inherit title; body = "${moduleDoc}${body}"; };
 
   # Parse SUMMARY.md to extract ordered guide chapters.
   # Returns list of { title, filename } for lines matching "- [Title](filename.md)".
@@ -104,8 +114,69 @@ let
   guideEntries = lib.mapAttrsToList (filename: title: {
     name = "nix-effects/guide/${filename}.md";
     path = pkgs.writeText "${filename}.md"
-      (addFrontMatter title (rewriteGuideLinks (builtins.readFile (bookSrc + "/${filename}.md"))));
+      (addFrontMatter {
+        inherit title;
+        body = rewriteGuideLinks (builtins.readFile (bookSrc + "/${filename}.md"));
+        mtime = mtimeForBookFile "${filename}.md";
+      });
   }) guideChapters;
+
+  # Render the diag namespace as a single core-api page. The diag
+  # subtree is a directory of submodules (error, hints, positions,
+  # pretty) with no top-level `.doc` field, so it isn't picked up by
+  # the generic core-modules filter; it has its own renderer because
+  # nix/nix-effects/src/diag/hints.nix points every Hint's docLink at
+  # /nix-effects/core-api/diag#<slug-of-key> and we need the rendered
+  # page to expose those anchors.
+  renderDiagPage = diagDocs: hintsRegistry:
+    let
+      submoduleSection = name: node:
+        lib.optionalString (node ? doc && node.doc != "")
+          ("## ${name}\n\n"
+           + lib.removeSuffix "\n"
+               (lib.trimWith { start = true; end = true; } node.doc)
+           + "\n\n");
+
+      submoduleSections = lib.concatStrings [
+        (submoduleSection "error" (diagDocs.error or {}))
+        (submoduleSection "positions" (diagDocs.positions or {}))
+        (submoduleSection "pretty" (diagDocs.pretty or {}))
+        (submoduleSection "hints" (diagDocs.hints or {}))
+      ];
+
+      sortedKeys = lib.sort (a: b: a < b) (builtins.attrNames hintsRegistry);
+
+      renderHintEntry = key:
+        let h = hintsRegistry.${key};
+        in ''
+          ### ${key}
+
+          Category: **${h.category}** · Severity: **${h.severity}**
+
+          ${h.text}
+
+        '';
+
+      hintsSection =
+        "## Hint registry\n\n"
+        + ''
+          The Hint table maps each *blame-path-suffix · classifier-pattern*
+          key to a structured Hint record. Each subsection below
+          corresponds to one such key; the heading anchor is the canonical
+          `docLink` target referenced from `hints.nix`.
+
+        ''
+        + lib.concatStrings (map renderHintEntry sortedKeys);
+
+      preamble = ''
+        The `diag` namespace provides typed diagnostic Errors and
+        structured Hints for the type-checker and runtime contracts.
+
+      '';
+
+      body = preamble + submoduleSections + hintsSection;
+    in
+      addFrontMatter { title = "Diag"; inherit body; };
 
   # Generate linkFarm entries for API docs.
   # Maps extractDocs tree structure to flat section directories.
@@ -113,8 +184,10 @@ let
     let
       # Core API modules — derived dynamically from extractDocs.
       # Everything at the top level that isn't a sub-namespace container
-      # (effects, types, stream) and has documentation.
-      subNamespaces = [ "effects" "types" "stream" "tc" ];
+      # (effects, types, stream) and has documentation. `diag` is also
+      # excluded — it gets a dedicated renderer below that walks the
+      # raw Hints registry to emit per-key anchors.
+      subNamespaces = [ "effects" "types" "stream" "tc" "diag" ];
       coreModules = builtins.filter
         (name: !(builtins.elem name subNamespaces)
                && builtins.isAttrs docs.${name}
@@ -126,6 +199,16 @@ let
           path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) docs.${name});
         } else null
       ) coreModules);
+
+      # Diag page: one core-api page generated from extractDocs.diag
+      # plus the raw Hints registry (the registry is accessed through
+      # `nix-effects.src` because extractDocs strips `_tag`-marked Hint
+      # records via api.extractValue's terminal-tag rule).
+      diagEntry = lib.optionals (docs ? diag && nix-effects ? src) [{
+        name = "nix-effects/core-api/diag.md";
+        path = pkgs.writeText "diag.md"
+          (renderDiagPage docs.diag nix-effects.src.diag.hints.hints);
+      }];
 
       # Effects modules
       effectsEntries = lib.optionals (docs ? effects)
@@ -155,7 +238,7 @@ let
           path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
         }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.tc));
 
-    in coreEntries ++ effectsEntries ++ typesEntries ++ streamEntries ++ tcEntries;
+    in coreEntries ++ diagEntry ++ effectsEntries ++ typesEntries ++ streamEntries ++ tcEntries;
 
   # project.json — standard contract for the doc service to auto-discover
   # this project. Section ordering, reference flags, and banner templates
@@ -196,7 +279,11 @@ let
   indexEntry = {
     name = "nix-effects/index.md";
     path = pkgs.writeText "index.md"
-      (addFrontMatter "nix-effects" (builtins.readFile (bookSrc + "/index.md")));
+      (addFrontMatter {
+        title = "nix-effects";
+        body = builtins.readFile (bookSrc + "/index.md");
+        mtime = mtimeForBookFile "index.md";
+      });
   };
 
 in

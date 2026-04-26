@@ -114,7 +114,21 @@ let
               tm = fx.tc.hoas.elab effectiveKernelType;
               result = fx.tc.check.runCheck
                 (fx.tc.check.checkTypeLevel fx.tc.check.emptyCtx tm);
-            in if result ? error then 0 else result.level;
+            in if result ? error then 0
+               else
+                 # The level returned by checkTypeLevel can be a
+                 # `vLevelMax …` that only reduces to a concrete
+                 # `VLevelSuc^n VLevelZero` after the Level normaliser
+                 # runs (e.g. `Π Nat Nat` has level `max 0 0`).
+                 # Normalise first, then peel.
+                 let
+                   spine = fx.tc.conv.normLevel result.level;
+                 in
+                   if spine == [] then 0
+                   else if builtins.length spine == 1
+                        && (builtins.head spine).base.kind == "zero"
+                   then (builtins.head spine).shift
+                   else 0;
 
         # _kernel is always exposed as the best kernel approximation, even for
         # approximate types. This lets constructors always build precise composed

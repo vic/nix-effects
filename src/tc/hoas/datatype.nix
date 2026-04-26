@@ -61,16 +61,16 @@ in {
         rest = builtins.tail fields;
         k = f.kind;
       in
-        if      k == "data"  then descArg f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "dataD" then descArg (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        if      k == "data"  then descArg 0 f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "dataD" then descArg 0 (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
         else if k == "recAt" then recI (f.idxFn prev) (conDesc I prev rest targetIdx)
         else if k == "pi"    then
           if isUnitI
-          then descPi f.S (conDesc I prev rest targetIdx)
+          then descPi 0 f.S (conDesc I prev rest targetIdx)
           else throw "datatype: piField '${f.name}' not supported at indexed family (I != unit)"
         else if k == "piD"   then
           if isUnitI
-          then descPi (f.SFn prev) (conDesc I prev rest targetIdx)
+          then descPi 0 (f.SFn prev) (conDesc I prev rest targetIdx)
           else throw "datatype: piFieldD '${f.name}' not supported at indexed family (I != unit)"
         else throw "datatype: unknown field kind '${k}'";
 
@@ -120,7 +120,7 @@ in {
     # case returns `payload` directly.
     encodeTag = I: dOuter: descsHoas: targetIdxVal: t: payload:
       let
-        inherit (self) plus inlPrim inrPrim interpHoas
+        inherit (self) plus inlPrim inrPrim interpHoasAt
                         muI lam encodeTag;
         n = builtins.length descsHoas;
         muFam = lam "_i" I (iArg: muI I dOuter iArg);
@@ -130,7 +130,10 @@ in {
           let remaining = n - k; in
           if remaining == 1 then builtins.elemAt descsHoas k
           else plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
-        interpAt = dH: interpHoas I dH muFam targetIdxVal;
+        # `datatype` descriptions live at `desc^0` — every constructor's
+        # arg/pi summands take their sort `S` from `U(0)`. The
+        # `interpHoasAt 0` makes that explicit.
+        interpAt = dH: interpHoasAt 0 I dH muFam targetIdxVal;
       in
       if n == 1 then payload
       else
@@ -159,7 +162,7 @@ in {
           ttPrim unitPrim
           plus sumPrim inlPrim inrPrim sumElimPrim
           eq refl j
-          muI descI descCon descInd interpHoas allHoas
+          muI descI descCon descInd interpHoasAt allHoasAt
           conDesc spineDesc payloadTuple encodeTag;
 
         n = builtins.length consList;
@@ -194,7 +197,7 @@ in {
         T = if indexed then TFam else TAtTt;
 
         muFam = lam "_i" I (iArg: muI I D iArg);
-        ppTy = forall "i" I (iArg: forall "_" (muI I D iArg) (_: u 0));
+        ppTy = K: forall "i" I (iArg: forall "_" (muI I D iArg) (_: u K));
 
         # Apply the user motive `P` to a scrutinee `x` at its index
         # `idx`. At indexed=false the user motive is 1-ary and `idx` is
@@ -369,7 +372,7 @@ in {
         # declaration order line up with snd-descents.
         #
         # For payloadIH, only rec/pi/piD fields contribute a Σ component
-        # (data/dataD's allHoas case is the identity on the tail). The
+        # (data/dataD's allHoasAt case is the identity on the tail). The
         # i-th rec/pi IH (0-based among rec/pi-only fields, in declaration
         # order) lives at fst (snd^i payloadIH).
         buildStepApply = s: c: payload: payloadIH:
@@ -434,7 +437,7 @@ in {
         # `M(iArg, snd^k r)` matches the expected type. k=0 corner: r
         # ITSELF is the Eq witness and `payloadCtx e` is the full payload
         # at the leaf.
-        dispatchStep = Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
+        dispatchStep = K: Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
           let
             n' = builtins.length descs;
 
@@ -484,15 +487,15 @@ in {
               # the outer plus's interp reduces to `Sum lInterp rInterp`
               # (kernel Sum), and `payload : Sum lInterp rInterp` is
               # dispatched via `sumElimPrim`.
-              lInterp = interpHoas I D1 muFam iArg;
-              rInterp = interpHoas I restSpine muFam iArg;
+              lInterp = interpHoasAt 0 I D1 muFam iArg;
+              rInterp = interpHoasAt 0 I restSpine muFam iArg;
               # Sum-elim motive: each summand inhabits this Pp-target
               # rebuilt through `ctx (inlPrim/inrPrim …)`.
               sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                forall "rih" (allHoas I D (plus D1 restSpine) Pp iArg s) (_:
+                forall "rih" (allHoasAt 0 K I D (plus D1 restSpine) Pp iArg s) (_:
                   app (app Pp iArg) (descCon D iArg (ctx s))));
               onInl = lam "r" lInterp (r:
-                      lam "rih" (allHoas I D D1 Pp iArg r) (rih:
+                      lam "rih" (allHoasAt 0 K I D D1 Pp iArg r) (rih:
                         let targetIdx_c1 = c1.targetIdx (prevOfPayload c1 r); in
                         jTransportLeaf targetIdx_c1
                           (local: ctx (inlPrim lInterp rInterp local))
@@ -500,8 +503,8 @@ in {
                           (buildStepApply s1 c1 r rih)));
               ctx' = local: ctx (inrPrim lInterp rInterp local);
               onInr = lam "r" rInterp (r:
-                      lam "rih" (allHoas I D restSpine Pp iArg r) (rih:
-                        dispatchStep Pp iArg ctx' restD restS restC r rih));
+                      lam "rih" (allHoasAt 0 K I D restSpine Pp iArg r) (rih:
+                        dispatchStep K Pp iArg ctx' restD restS restC r rih));
             in app (sumElimPrim lInterp rInterp sumMot onInl onInr payload)
                  payloadIH;
 
@@ -510,10 +513,10 @@ in {
         # checked positions — the bidirectional kernel has no infer rule
         # for bare `lam`. `ann` is eval-transparent, so nf-equivalence
         # against the inline-adapter spelling is preserved.
-        motiveTy =
+        motiveTy = K:
           if indexed
-          then forall "i" I (iArg: forall "_" (muI I D iArg) (_: u 0))
-          else forall "_" TAtTt (_: u 0);
+          then forall "i" I (iArg: forall "_" (muI I D iArg) (_: u K))
+          else forall "_" TAtTt (_: u K);
         stepNames = builtins.genList (i: "step_${toString i}") n;
 
         # Wrap a body with `lam step_i (stepTyOf P i c)` for each
@@ -542,45 +545,48 @@ in {
         # Step body for `descInd`. Same shape at indexed=false and
         # indexed=true — the step function is always `λi:I. λd:⟦D⟧ muFam
         # i. λih:All D D Pp i d. dispatchStep Pp i id conDescs steps cons
-        # d ih`.
-        indStep = Pp: steps:
+        # d ih`. `K` is the motive's codomain universe and flows into
+        # `allHoasAt` so the internal pTy binder accepts a `Pp` whose
+        # codomain lives at U(K). The scrutinee description level `L = 0`
+        # — `datatype` constructors all bind their sorts at `U(0)`.
+        indStep = K: Pp: steps:
           lam "i" I (iArg:
-          lam "d" (interpHoas I D muFam iArg) (d:
-          lam "ih" (allHoas I D D Pp iArg d) (ih:
-            dispatchStep Pp iArg (x: x) conDescs steps consList d ih)));
+          lam "d" (interpHoasAt 0 I D muFam iArg) (d:
+          lam "ih" (allHoasAt 0 K I D D Pp iArg d) (ih:
+            dispatchStep K Pp iArg (x: x) conDescs steps consList d ih)));
 
-        elimTy =
+        elimTy = K:
           if indexed then
-            forall "P" motiveTy (P:
+            forall "P" (motiveTy K) (P:
             buildPiCascade
               (forall "i" I (iArg:
                 forall "scrut" (muI I D iArg) (scrut: app (app P iArg) scrut)))
               P)
           else
-            forall "P" motiveTy (P:
+            forall "P" (motiveTy K) (P:
             buildPiCascade
               (forall "scrut" TAtTt (scrut: app P scrut))
               P);
 
-        elimBody =
+        elimBody = K:
           if indexed then
-            lam "P" motiveTy (P:
+            lam "P" (motiveTy K) (P:
             buildLamCascade (steps:
               lam "i" I (iArg:
               lam "scrut" (muI I D iArg) (scrut:
-                let_ "Pp" ppTy P (Pp:
-                  descInd D Pp (indStep Pp steps) iArg scrut))))
+                let_ "Pp" (ppTy K) P (Pp:
+                  descInd D Pp (indStep K Pp steps) iArg scrut))))
               P)
           else
-            lam "P" motiveTy (P:
+            lam "P" (motiveTy K) (P:
             buildLamCascade (steps:
               lam "scrut" TAtTt (scrut:
-                let_ "Pp" ppTy
+                let_ "Pp" (ppTy K)
                   (lam "i" I (_: lam "x" (muI I D ttPrim) (x: app P x))) (Pp:
-                  descInd D Pp (indStep Pp steps) ttPrim scrut)))
+                  descInd D Pp (indStep K Pp steps) ttPrim scrut)))
               P);
 
-        elim = ann elimBody elimTy;
+        elim = K: ann (elimBody K) (elimTy K);
 
         # Uniform metadata exposed alongside the DataSpec. `indexTy`
         # describes the index type of the family; at `indexed=false` it
@@ -704,6 +710,13 @@ in {
                 builtins.getAttr fieldName (monoOf markers)))
               (paramPi (markers:
                 builtins.getAttr fieldName (monoOf markers)._tys));
+        # `elim` on the monomorphic spec is `K → Tm` (universe-polymorphic
+        # in the motive's codomain); the polymorphic wrapper threads `K`
+        # outside the parameter cascade so callers write `ListDT.elim K A P
+        # N C scrut` with `K` leading the parameter-plus-motive spine.
+        polyElim = K:
+          ann (overParams (markers: (monoOf markers).elim K))
+              (paramPi (markers: (monoOf markers)._tys.elim K));
         # Poly constructor wrapper: tagged `dt-ctor-poly` HOAS node
         # carrying the nParams/monoAt hook that `elaborate`'s `app` branch
         # uses to recognise saturated chains and flatten them into a flat
@@ -775,7 +788,7 @@ in {
         # and recover constructor + field names for macro-generated VMu
         # values.
         T    = (polyField "T") // { inherit _dtypeMeta; };
-        elim = polyField "elim";
+        elim = polyElim;
         inherit _dtypeMeta;
         _cons = probe;
       });

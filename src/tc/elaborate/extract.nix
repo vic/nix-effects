@@ -27,9 +27,11 @@ in {
       let dt = dVal.tag; in
       if dt == "VDescRet" then H.descRet
       else if dt == "VDescRec" then H.descRec (self.reifyDesc dVal.D)
-      else if dt == "VDescPi" then H.descPi (self.reifyType dVal.S) (self.reifyDesc dVal.D)
+      else if dt == "VDescPi" then
+        H.descPi (H.reifyLevel dVal.k) (self.reifyType dVal.S)
+                 (self.reifyDesc dVal.D)
       else if dt == "VDescArg" then
-        H.descArg (self.reifyType dVal.S)
+        H.descArg (H.reifyLevel dVal.k) (self.reifyType dVal.S)
           (x: self.reifyDesc (E.instantiate dVal.T (E.eval [] (H.elab x))))
       else throw "reifyDesc: unsupported VDesc tag '${dt}'";
 
@@ -72,7 +74,12 @@ in {
       else if t == "VPi" then
         H.forall tyVal.name (self.reifyType tyVal.domain)
           (x: self.reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
-      else if t == "VU" then H.u tyVal.level
+      else if t == "VU" then
+        # Universe level is a Level value. `H.reifyLevel` round-trips
+        # any Level Val (concrete `vLevelSuc^n vLevelZero` chain,
+        # `vLevelMax`, or `vNe` for a bound Level variable) into a HOAS
+        # Level node, which `u`'s `elaborateLevel` accepts uniformly.
+        H.u (H.reifyLevel tyVal.level)
       # VMu D — description-based fixpoints. Three sugar shapes are detected
       # first and reified to their named HOAS forms (preserves printed names
       # in error messages). Under the plus-coproduct encoding:
