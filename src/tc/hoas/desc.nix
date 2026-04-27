@@ -62,23 +62,25 @@
     #   rec  — Π(_ : ⊤). ⊤
     #   pi   — Π(S : U(k)). Π(T : S → ⊤). Π(_ : ⊤). ⊤
     #   plus — Π(_ : ⊤). Π(_ : ⊤). ⊤
-    # Every kernel descArg / descPi inside this body carries level
-    # `suc k`, matching the description's outer level so the
-    # homogeneous-L invariant enforced by `desc-arg` / `desc-pi` CHECK
-    # is satisfied. The arg / pi summands' first descArg picks up
-    # `u k : U(suc k)` directly. The inner descPi then binds the
-    # function field at level `suc k`; its sort `S` (already a type
-    # at U(k)) inhabits U(suc k) via U-cumulativity, so the field's
-    # mathematical content (a function `S → ⊤`) is preserved while
-    # the syntactic level slot matches the surrounding description.
+    # Every kernel descArg / descPi inside this body announces a
+    # description-level of `suc k` (matching the outer Desc^(suc k)),
+    # but each individual summand's *sort* lives at its natural per-
+    # summand level. The arg / pi summands' first descArg's sort is
+    # `u k : U(suc k)` — homogeneous at the description level. The
+    # inner `descPi` over `S : U(k)` uses the mixed-level form
+    # `descPiAt k (suc k) …`: per-summand level `k`, description level
+    # `suc k`, with the bound witness `refl : Eq Level (max k (suc k))
+    # (suc k)` discharged by the kernel's convLevel semilattice
+    # quotient (`max k (suc k) = suc k`). Replaces the prior
+    # Sub-at-U-mediated coercion of `S : U(k)` into a `U(suc k)` slot.
     descDesc =
       let inherit (self) lam forall ann level u plus descAt
-                         descRet descArg descRec descPi levelSuc; in
+                         descRet descArg descRec descPi descPiAt levelSuc; in
       ann
         (lam "k" level (k:
            let sk = levelSuc k; in
            plus descRet
-           (plus (descArg sk (u k) (S: descPi sk S descRet))
+           (plus (descArg sk (u k) (S: descPiAt k sk S descRet))
            (plus (descRec descRet)
            (plus (descArg sk (u k) (_: descRec descRet))
                  (descRec (descRec descRet)))))))
@@ -107,8 +109,8 @@
       let
         inherit (self) lam forall sigma ann level levelZero levelSuc
                        u plus pair fst_ snd_ refl ttPrim unitPrim
-                       eq desc descAt descRet descArg descRec descPi descCon
-                       descElim descInd interpHoasAt allHoasAt
+                       eq desc descAt descRet descArg descRec descPi descPiAt
+                       descCon descElim descInd interpHoasAt allHoasAt
                        sumPrim sumElimPrim inlPrim inrPrim
                        muI mu app descDesc encodeTag;
 
@@ -160,10 +162,14 @@
             # Per-summand sub-descriptions of `dDesc`. Indices 0..4.
             # Used by `encodeTag` for `to`'s payload, by the sumElim
             # cascade for `from` and `fromTo`, and as L/R types in
-            # the sumElim layers via `interpHoasAt`.
+            # the sumElim layers via `interpHoasAt`. Mirrors descDesc's
+            # body shape exactly — the inner `descPiAt k (suc k)` form
+            # threads the mixed-level bound witness so `S : U(k)` fits
+            # the description's `Desc^(suc k)` slot via `convLevel`'s
+            # `max k (suc k) = suc k` rather than via Sub-at-U.
             conDescs = [
               descRet
-              (descArg (levelSuc k) (u k) (S: descPi (levelSuc k) S descRet))
+              (descArg (levelSuc k) (u k) (S: descPiAt k (levelSuc k) S descRet))
               (descRec descRet)
               (descArg (levelSuc k) (u k) (_: descRec descRet))
               (descRec (descRec descRet))

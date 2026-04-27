@@ -250,49 +250,60 @@ in {
         bindP P.DRetIndex (self.check ctx tm.j ty.I) (jTm:
           pure (T.mkDescRet jTm))
 
-      # desc-arg checked against Desc^L I — S : U(k) under the leading
-      # Level `k`, then the body T is a Desc^L I in the context
+      # desc-arg checked against Desc^L I — S : U(l) under the per-
+      # summand Level `l`, then the body T is a Desc^L I in the context
       # extended by `_ : S` (T is the closure body, not a lambda; the
       # binding is materialised at eval time via `mkClosure env tm.T`).
-      # Sub-delegations are wrapped in `bindP` so a sub-term failure
-      # inherits the descent coordinate (`arg.k`, `arg.S`, or `arg.T`)
-      # at the caller site.
+      # The bound witness `eq : Eq Level (max l k) k` proves `l ≤ k`
+      # decidably via the `convLevel` semilattice quotient. Sub-
+      # delegations are wrapped in `bindP` so a sub-term failure
+      # inherits the descent coordinate (`arg.k`, `arg.S`, `arg.eq`,
+      # or `arg.T`) at the caller site.
       #
       # `Desc^L I` is the type of homogeneous-L descriptions: every
-      # `descArg` / `descPi` constructor inside must bind its sort at
-      # exactly level L. CHECK propagates `ty` (= `Desc^L I`) into T
-      # so any nested arg / pi constructors recurse through this same
-      # rule and inherit the equality constraint. The local `kVal ≡ L`
-      # check rejects mismatched constructors directly: `descArg 0 nat
-      # (s: descRet)` against `Desc^1` is rejected (`0 ≠ 1`), and
-      # `descArg 1 nat (s: descRet)` against `Desc^0` is rejected
-      # (`1 ≠ 0`). The eliminator (`desc-elim`) relies on this
+      # `descArg` / `descPi` constructor inside must bind its sort at a
+      # per-summand level `l ≤ L`. CHECK propagates `ty` (= `Desc^L I`)
+      # into T so any nested arg / pi constructors recurse through this
+      # same rule and inherit the description-level equality constraint.
+      # The local `kVal ≡ L` check rejects constructors whose announced
+      # description-level does not match the surrounding `Desc^L`: this
+      # is distinct from the per-summand bound `l ≤ k` proved by `eq`.
+      # The eliminator (`desc-elim`) relies on the description-level
       # invariant — its case bodies bind their sort at the leading
-      # `K` slot, and that slot is checked against `sTy.level` so
-      # the static return type matches the runtime scrutinee.
+      # `K` slot, and that slot is checked against `sTy.level` so the
+      # static return type matches the runtime scrutinee.
       else if t == "desc-arg" && ty.tag == "VDesc" then
         let
-          sortAt = kVal:
-            bindP P.DArgSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+          sortAt = kVal: lVal:
+            bindP P.DArgSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
                   ctx' = self.extend ctx "_" sVal;
               in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
-                if C.convLevel kVal ty.level
-                then pure (T.mkDescArg tm.k tm.l sTm tm.eq tTm)
-                else send "typeError" {
-                  error = D.mkKernelError {
-                    position = P.DArgLevel;
-                    rule     = "desc-arg";
-                    msg      = "desc-arg: argument level must equal description level";
-                    expected = Q.quote ctx.depth ty.level;
-                    got      = Q.quote ctx.depth kVal;
-                  };
-                }));
+                bindP P.DArgEq
+                  (self.check ctx tm.eq
+                    (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                  (eqTm:
+                    if C.convLevel kVal ty.level
+                    then pure (T.mkDescArg tm.k tm.l sTm eqTm tTm)
+                    else send "typeError" {
+                      error = D.mkKernelError {
+                        position = P.DArgLevel;
+                        rule     = "desc-arg";
+                        msg      = "desc-arg: argument level must equal description level";
+                        expected = Q.quote ctx.depth ty.level;
+                        got      = Q.quote ctx.depth kVal;
+                      };
+                    })));
+          withL = kVal:
+            if tm.l.tag == "level-zero"
+            then sortAt kVal V.vLevelZero
+            else bindP P.DArgSort (self.check ctx tm.l V.vLevel) (lTm:
+              sortAt kVal (E.eval ctx.env lTm));
         in
           if tm.k.tag == "level-zero"
-          then sortAt V.vLevelZero
+          then withL V.vLevelZero
           else bindP P.DArgLevel (self.check ctx tm.k V.vLevel) (kTm:
-            sortAt (E.eval ctx.env kTm))
+            withL (E.eval ctx.env kTm))
 
       # desc-rec checked against Desc I — j : I picks the recursive
       # child's index, and the tail D : Desc I continues the description.
@@ -303,43 +314,55 @@ in {
           bindP P.DRecTail (self.check ctx tm.D ty) (dTm:
             pure (T.mkDescRec jTm dTm)))
 
-      # desc-pi checked against Desc^L I — S : U(k), f : S → I selects
+      # desc-pi checked against Desc^L I — S : U(l), f : S → I selects
       # the index per branch, and the tail D : Desc^L I continues. f's
       # Pi type is built with a non-dependent codomain quoting ty.I at
-      # the closure-body depth. Four sub-delegations: `DPiLevel` for
-      # the level argument, `DPiSort` for the domain sort, `DPiFn` for
-      # the index selector, `DPiBody` for the tail description.
+      # the closure-body depth. Five sub-delegations: `DPiLevel` for
+      # the description-level argument, `DPiSort` for the per-summand
+      # domain sort, `DPiEq` for the bound witness, `DPiFn` for the
+      # index selector, `DPiBody` for the tail description.
       #
       # Like `desc-arg`, soundness requires `kVal ≡ L`: every
-      # `descPi` constructor inside `Desc^L I` binds its sort at
-      # exactly level L. The recursive check on the tail `D : Desc^L
-      # I` propagates the same constraint downward. See the desc-arg
-      # rule for full rationale.
+      # `descPi` constructor inside `Desc^L I` announces a
+      # description-level matching L. The bound witness
+      # `eq : Eq Level (max l k) k` proves the per-summand `l ≤ k`.
+      # The recursive check on the tail `D : Desc^L I` propagates the
+      # description-level constraint downward. See the desc-arg rule
+      # for full rationale.
       else if t == "desc-pi" && ty.tag == "VDesc" then
         let
-          sortAt = kVal:
-            bindP P.DPiSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+          sortAt = kVal: lVal:
+            bindP P.DPiSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
                   fTy = V.vPi "_" sVal (V.mkClosure ctx.env
                     (Q.quote (ctx.depth + 1) ty.I));
               in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
                 bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
-                  if C.convLevel kVal ty.level
-                  then pure (T.mkDescPi tm.k tm.l sTm tm.eq fTm dTm)
-                  else send "typeError" {
-                    error = D.mkKernelError {
-                      position = P.DPiLevel;
-                      rule     = "desc-pi";
-                      msg      = "desc-pi: argument level must equal description level";
-                      expected = Q.quote ctx.depth ty.level;
-                      got      = Q.quote ctx.depth kVal;
-                    };
-                  })));
+                  bindP P.DPiEq
+                    (self.check ctx tm.eq
+                      (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                    (eqTm:
+                      if C.convLevel kVal ty.level
+                      then pure (T.mkDescPi tm.k tm.l sTm eqTm fTm dTm)
+                      else send "typeError" {
+                        error = D.mkKernelError {
+                          position = P.DPiLevel;
+                          rule     = "desc-pi";
+                          msg      = "desc-pi: argument level must equal description level";
+                          expected = Q.quote ctx.depth ty.level;
+                          got      = Q.quote ctx.depth kVal;
+                        };
+                      }))));
+          withL = kVal:
+            if tm.l.tag == "level-zero"
+            then sortAt kVal V.vLevelZero
+            else bindP P.DPiSort (self.check ctx tm.l V.vLevel) (lTm:
+              sortAt kVal (E.eval ctx.env lTm));
         in
           if tm.k.tag == "level-zero"
-          then sortAt V.vLevelZero
+          then withL V.vLevelZero
           else bindP P.DPiLevel (self.check ctx tm.k V.vLevel) (kTm:
-            sortAt (E.eval ctx.env kTm))
+            withL (E.eval ctx.env kTm))
 
       # desc-plus checked against Desc I — both summands share the same
       # index type. Mirrors the desc-ret/arg/rec/pi CHECK rules so that

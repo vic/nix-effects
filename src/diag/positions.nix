@@ -31,9 +31,11 @@ let
   # Positions naming sub-locations inside the five Desc constructors.
   DArgLevel = mkPos "DArgLevel" "arg.k" {};
   DArgSort  = mkPos "DArgSort"  "arg.S" {};
+  DArgEq    = mkPos "DArgEq"    "arg.eq" {};
   DArgBody  = mkPos "DArgBody"  "arg.T" {};
   DPiLevel  = mkPos "DPiLevel"  "pi.k"  {};
   DPiSort   = mkPos "DPiSort"   "pi.S"  {};
+  DPiEq     = mkPos "DPiEq"     "pi.eq" {};
   DPiFn     = mkPos "DPiFn"     "pi.f"  {};
   DPiBody   = mkPos "DPiBody"   "pi.T"  {};
   DElimLevel = mkPos "DElimLevel" "elim.k" {};
@@ -137,8 +139,8 @@ in mk {
   '';
   value = {
     inherit
-      DArgLevel DArgSort DArgBody
-      DPiLevel DPiSort DPiFn DPiBody
+      DArgLevel DArgSort DArgEq DArgBody
+      DPiLevel DPiSort DPiEq DPiFn DPiBody
       DElimLevel
       DRetIndex
       DRecIndex DRecTail
@@ -230,6 +232,14 @@ in mk {
     "render-DArgBody" = {
       expr = renderSegment DArgBody;
       expected = "arg.T";
+    };
+    "render-DArgEq" = {
+      expr = renderSegment DArgEq;
+      expected = "arg.eq";
+    };
+    "render-DPiEq" = {
+      expr = renderSegment DPiEq;
+      expected = "pi.eq";
     };
     "render-DPiFn" = {
       expr = renderSegment DPiFn;

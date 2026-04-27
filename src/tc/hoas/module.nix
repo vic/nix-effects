@@ -100,8 +100,9 @@ api.mk {
     # `descI`/`retI`/`recI`/`piI`/`muI` build `Desc I` / `μ I D i` at an
     # arbitrary index type; `desc`/`descRet`/`descRec`/`descPi`/`mu` are
     # ⊤-slice aliases that specialise I to `Unit`.
-    inherit (self) descI desc descIAt descAt muI mu retI recI piI
-                   descRet descArg descRec descPi descCon descInd descElim;
+    inherit (self) descI desc descIAt descAt muI mu retI recI piI piIAt
+                   descRet descArg descArgAt descRec descPi descPiAt
+                   descCon descInd descElim;
     # Description-level helpers and prelude descriptions
     inherit (self) interpHoasAt allHoasAt natDesc listDesc sumDesc natDescTm descDesc iso;
     # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at

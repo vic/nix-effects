@@ -632,13 +632,15 @@ let
     else if t == "desc-arg" then
       let marker = self.mkMarker depth;
           kTm = elaborateLevel depth h.k;
-      in T.mkDescArg kTm kTm (elaborate depth h.S) T.mkRefl
+          lTm = if h ? l then elaborateLevel depth h.l else kTm;
+      in T.mkDescArg kTm lTm (elaborate depth h.S) T.mkRefl
            (elaborate (depth + 1) (h.body marker))
     else if t == "desc-rec" then
       T.mkDescRec (elaborate depth h.j) (elaborate depth h.D)
     else if t == "desc-pi" then
-      let kTm = elaborateLevel depth h.k; in
-      T.mkDescPi kTm kTm (elaborate depth h.S) T.mkRefl (elaborate depth h.f)
+      let kTm = elaborateLevel depth h.k;
+          lTm = if h ? l then elaborateLevel depth h.l else kTm;
+      in T.mkDescPi kTm lTm (elaborate depth h.S) T.mkRefl (elaborate depth h.f)
         (elaborate depth h.D)
     else if t == "desc-plus" then
       T.mkDescPlus (elaborate depth h.A) (elaborate depth h.B)

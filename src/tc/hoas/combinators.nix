@@ -202,13 +202,27 @@ in {
     # inhabits `U(k)`; `T` is a Nix function opening a fresh variable.
     # The leading-Int shape `descArg 0 Nat T` is the common prelude
     # form; `descArg 1 (u 0) T` carries a universe as its domain.
+    # Homogeneous default: per-summand level `l = k`.
     descArg = k: S: T: { _htag = "desc-arg"; inherit k S; body = T; };
+
+    # descArgAt l k S (b: T b) — mixed-level variant. `S : U(l)` with
+    # `l ≤ k` proved by the auto-emitted `refl : Eq Level (max l k) k`
+    # witness (decided via convLevel's semilattice quotient). Use this
+    # when `S`'s natural sort is below the description level — the
+    # load-bearing pattern at descDesc / iso / macro-derived
+    # eliminators at K > 0.
+    descArgAt = l: k: S: T:
+      { _htag = "desc-arg"; inherit k l S; body = T; };
 
     recI = j: D: { _htag = "desc-rec"; inherit j D; };
     descRec = D: self.recI self.ttPrim D;
 
     # piI k S f D — `pi` at arbitrary index type with leading level.
+    # Homogeneous default: per-summand level `l = k`.
     piI = k: S: f: D: { _htag = "desc-pi"; inherit k S f D; };
+
+    # piIAt l k S f D — mixed-level variant of `piI`. See `descArgAt`.
+    piIAt = l: k: S: f: D: { _htag = "desc-pi"; inherit k l S f D; };
     # The kernel `desc-pi` infer rule recovers I from the codomain of
     # `tm.f`, so `f` must be inferable. A bare `lam` is checkable-only in
     # the bidirectional kernel; the ⊤-slice alias therefore ann-wraps the
@@ -216,6 +230,13 @@ in {
     # synthesis through CHECK where bare canonical forms are accepted.
     descPi = k: S: D:
       self.piI k S
+        (self.ann (self.lam "_" S (_: self.ttPrim))
+                  (self.forall "_" S (_: self.unitPrim)))
+        D;
+
+    # descPiAt l k S D — mixed-level ⊤-slice alias. See `descArgAt`.
+    descPiAt = l: k: S: D:
+      self.piIAt l k S
         (self.ann (self.lam "_" S (_: self.ttPrim))
                   (self.forall "_" S (_: self.unitPrim)))
         D;

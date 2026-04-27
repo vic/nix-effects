@@ -313,19 +313,21 @@ in {
         bindP P.DRetIndex (self.infer ctx tm.j) (jResult:
           pure { term = T.mkDescRet jResult.term; type = V.vDesc V.vLevelZero jResult.type; })
 
-      # desc-arg (§2.4). Universe-polymorphic: `S : U(k)` where `k`
-      # is the leading Level-typed argument. The body `T : S → Desc I`
-      # is inferred to determine I. Sub-delegations are wrapped in
-      # `bindP` so any failure inherits the descent coordinate
-      # (`arg.k`, `arg.S`, or `arg.T`) at the caller site.
-      # Level-zero fast-path: when `tm.k` is the `level-zero`
-      # singleton, reuse the cached `vU0` sort and skip the
-      # check/eval/vU pipeline — recovers the allocation cost of the
-      # new `k` slot on prelude descriptions (all of which are k=0).
+      # desc-arg (§2.4). Per-summand level discipline: `S : U(l)` where
+      # `l` is the per-summand level and `k` is the description level;
+      # the bound witness `eq : Eq Level (max l k) k` proves `l ≤ k`
+      # decidably via `convLevel`. The body `T : S → Desc I` is inferred
+      # to determine I; the resulting description level is
+      # `max(k, level T)`, not `max(l, level T)` — `l` only governs S's
+      # sort, not the Desc-result level.
+      # Level-zero fast-paths on both `k` and `l`: the `level-zero`
+      # singleton lets the rule skip the check/eval/vU pipeline,
+      # recovering the allocation cost of the per-summand slots on the
+      # prelude descriptions (all of which carry k=l=0).
       else if t == "desc-arg" then
         let
-          sortAt = kVal:
-            bindP P.DArgSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+          sortAt = kVal: lVal:
+            bindP P.DArgSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
                   ctx' = self.extend ctx "_" sVal;
               in bindP P.DArgBody (self.infer ctx' tm.T) (tResult:
@@ -340,13 +342,22 @@ in {
                   };
                 }
                 else
-                  pure { term = T.mkDescArg tm.k tm.l sTm tm.eq tResult.term;
-                         type = V.vDesc (vLevelMaxOpt kVal tResult.type.level) tResult.type.I; }));
+                  bindP P.DArgEq
+                    (self.check ctx tm.eq
+                      (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                    (eqTm:
+                      pure { term = T.mkDescArg tm.k tm.l sTm eqTm tResult.term;
+                             type = V.vDesc (vLevelMaxOpt kVal tResult.type.level) tResult.type.I; })));
+          withL = kVal:
+            if tm.l.tag == "level-zero"
+            then sortAt kVal V.vLevelZero
+            else bindP P.DArgSort (self.check ctx tm.l V.vLevel) (lTm:
+              sortAt kVal (E.eval ctx.env lTm));
         in
           if tm.k.tag == "level-zero"
-          then sortAt V.vLevelZero
+          then withL V.vLevelZero
           else bindP P.DArgLevel (self.check ctx tm.k V.vLevel) (kTm:
-            sortAt (E.eval ctx.env kTm))
+            withL (E.eval ctx.env kTm))
 
       # desc-rec j D — `rec j D : Desc^L I` where L = level(D). Infer
       # j's type to get I, then route the tail D through
@@ -363,16 +374,20 @@ in {
             pure { term = T.mkDescRec jResult.term dInfo.term;
                    type = V.vDesc dInfo.level iVal; }))
 
-      # desc-pi k S f D — `pi k S f D : Desc I` where f : S → I
-      # determines I. Universe-polymorphic: `S : U(k)`. Four sub-
-      # delegations each carry their own descent coordinate: `DPiLevel`
-      # for the level argument, `DPiSort` for the domain sort, `DPiFn`
-      # for the index selector, `DPiBody` for the tail description.
-      # Level-zero fast-path mirrors the desc-arg case.
+      # desc-pi k l S eq f D — `pi k l S eq f D : Desc^k I` where
+      # f : S → I determines I and the bound witness
+      # `eq : Eq Level (max l k) k` proves `l ≤ k`. Per-summand
+      # `S : U(l)`; the Desc-result level remains `max(k, level D)`.
+      # Five sub-delegations each carry their own descent coordinate:
+      # `DPiLevel` for the description-level argument, `DPiSort` for
+      # the per-summand domain sort, `DPiEq` for the bound witness,
+      # `DPiFn` for the index selector, `DPiBody` for the tail
+      # description. Level-zero fast-paths on both `k` and `l` mirror
+      # the desc-arg case.
       else if t == "desc-pi" then
         let
-          sortAt = kVal:
-            bindP P.DPiSort (self.check ctx tm.S (V.vU kVal)) (sTm:
+          sortAt = kVal: lVal:
+            bindP P.DPiSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
               in bindP P.DPiFn (self.infer ctx tm.f) (fResult:
                 let fTy = fResult.type; in
@@ -404,13 +419,22 @@ in {
                   # recovery; non-canonical D INFER directly.
                   let iVal = E.instantiate fTy.closure (V.freshVar ctx.depth);
                   in bindP P.DPiBody (self.checkDescAtAnyLevel ctx tm.D iVal) (dInfo:
-                    pure { term = T.mkDescPi tm.k tm.l sTm tm.eq fResult.term dInfo.term;
-                           type = V.vDesc (vLevelMaxOpt kVal dInfo.level) iVal; })));
+                    bindP P.DPiEq
+                      (self.check ctx tm.eq
+                        (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                      (eqTm:
+                        pure { term = T.mkDescPi tm.k tm.l sTm eqTm fResult.term dInfo.term;
+                               type = V.vDesc (vLevelMaxOpt kVal dInfo.level) iVal; }))));
+          withL = kVal:
+            if tm.l.tag == "level-zero"
+            then sortAt kVal V.vLevelZero
+            else bindP P.DPiSort (self.check ctx tm.l V.vLevel) (lTm:
+              sortAt kVal (E.eval ctx.env lTm));
         in
           if tm.k.tag == "level-zero"
-          then sortAt V.vLevelZero
+          then withL V.vLevelZero
           else bindP P.DPiLevel (self.check ctx tm.k V.vLevel) (kTm:
-            sortAt (E.eval ctx.env kTm))
+            withL (E.eval ctx.env kTm))
 
       # desc-plus A B — `plus A B : Desc^L I` where L = max(level A,
       # level B). Infer A to determine I (and read its level), then
