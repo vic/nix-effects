@@ -278,7 +278,7 @@ in {
                   ctx' = self.extend ctx "_" sVal;
               in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
                 if C.convLevel kVal ty.level
-                then pure (T.mkDescArg tm.k sTm tTm)
+                then pure (T.mkDescArg tm.k tm.l sTm tm.eq tTm)
                 else send "typeError" {
                   error = D.mkKernelError {
                     position = P.DArgLevel;
@@ -325,7 +325,7 @@ in {
               in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
                 bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
                   if C.convLevel kVal ty.level
-                  then pure (T.mkDescPi tm.k sTm fTm dTm)
+                  then pure (T.mkDescPi tm.k tm.l sTm tm.eq fTm dTm)
                   else send "typeError" {
                     error = D.mkKernelError {
                       position = P.DPiLevel;

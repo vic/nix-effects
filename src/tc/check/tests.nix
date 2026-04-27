@@ -896,7 +896,7 @@ in {
 
     "infer-desc-arg" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescArg T.mkLevelZero T.mkNat (T.mkDescRet T.mkTt))
+        (T.mkAnn (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkDescRet T.mkTt))
                  (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
       expected = "VDesc";
     };
@@ -906,13 +906,13 @@ in {
     # `U(1)`. Acceptance criterion for Phase 11 Step 3.
     "infer-desc-arg-level-one" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) (T.mkDescRet T.mkTt))
+        (T.mkAnn (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) T.mkRefl (T.mkDescRet T.mkTt))
                  (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))).type.tag;
       expected = "VDesc";
     };
     "check-desc-arg-level-one" = {
       expr = (checkTm ctx0
-        (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) (T.mkDescRet T.mkTt))
+        (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) T.mkRefl (T.mkDescRet T.mkTt))
         (V.vDesc (V.vLevelSuc V.vLevelZero) vUnit)).tag;
       expected = "desc-arg";
     };
@@ -927,7 +927,7 @@ in {
     "infer-desc-pi" = {
       # f : Nat → Unit; all synthesis positions fold through the ann's check mode.
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescPi T.mkLevelZero T.mkNat
+        (T.mkAnn (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
                    (T.mkLam "_" T.mkNat T.mkTt)
                    (T.mkDescRet T.mkTt))
                  (T.mkDesc T.mkLevelZero T.mkUnit))).type.tag;
@@ -937,7 +937,7 @@ in {
     # Universe-polymorphic `pi` — `descPi 1 (u 0) f (ret tt)`.
     "infer-desc-pi-level-one" = {
       expr = (inferTm ctx0
-        (T.mkAnn (T.mkDescPi (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero)
+        (T.mkAnn (T.mkDescPi (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) T.mkRefl
                    (T.mkLam "_" (T.mkU T.mkLevelZero) T.mkTt)
                    (T.mkDescRet T.mkTt))
                  (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))).type.tag;
@@ -1087,7 +1087,7 @@ in {
     "reject-desc-arg-bad-S" = {
       # mkZero is not a type; check S : U(0) fails before reaching the body.
       expr = (inferTm ctx0
-        (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt))) ? error;
+        (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkZero T.mkRefl (T.mkDescRet T.mkTt))) ? error;
       expected = true;
     };
 
@@ -1098,7 +1098,7 @@ in {
     "reject-desc-arg-bad-S-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt));
+          (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkZero T.mkRefl (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgSort";
     };
@@ -1110,14 +1110,14 @@ in {
     "reject-desc-arg-bad-body-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkLevelZero T.mkNat (T.mkVar 0));
+          (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkVar 0));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgBody";
     };
     "reject-desc-arg-bad-body-rule" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg T.mkLevelZero T.mkNat (T.mkVar 0));
+          (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkVar 0));
         in r.error.detail.rule;
       expected = "desc-arg";
     };
@@ -1127,7 +1127,7 @@ in {
     "reject-desc-arg-check-bad-S-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescArg T.mkLevelZero T.mkZero (T.mkDescRet T.mkTt))
+          (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkZero T.mkRefl (T.mkDescRet T.mkTt))
           (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgSort";
@@ -1139,7 +1139,7 @@ in {
     "reject-desc-arg-bad-k-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) T.mkZero (T.mkDescRet T.mkTt));
+          (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) T.mkZero T.mkRefl (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DArgSort";
     };
@@ -1216,7 +1216,7 @@ in {
     "reject-desc-pi-infer-bad-S-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkLevelZero T.mkZero
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkZero T.mkRefl
             (T.mkLam "_" T.mkNat T.mkTt)
             (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
@@ -1228,7 +1228,7 @@ in {
     "reject-desc-pi-infer-bad-f-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkLevelZero T.mkNat T.mkTt (T.mkDescRet T.mkTt));
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl T.mkTt (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
     };
@@ -1239,14 +1239,14 @@ in {
     "reject-desc-pi-infer-f-not-pi-position" = {
       expr =
         let ctx' = extend ctx0 "_" vNat;
-            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkVar 0) (T.mkDescRet T.mkTt));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
     };
     "reject-desc-pi-infer-f-not-pi-rule" = {
       expr =
         let ctx' = extend ctx0 "_" vNat;
-            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+            r = inferTm ctx' (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkVar 0) (T.mkDescRet T.mkTt));
         in r.error.detail.rule;
       expected = "desc-pi";
     };
@@ -1256,7 +1256,7 @@ in {
     "reject-desc-pi-infer-f-domain-mismatch-position" = {
       expr =
         let r = inferTm ctx0
-          (T.mkDescPi T.mkLevelZero T.mkNat
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
             (T.mkAnn (T.mkLam "_" T.mkUnit T.mkTt)
                      (T.mkPi "_" T.mkUnit T.mkUnit))
             (T.mkDescRet T.mkTt));
@@ -1268,7 +1268,7 @@ in {
     "reject-desc-pi-check-bad-S-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkLevelZero T.mkZero
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkZero T.mkRefl
             (T.mkLam "_" T.mkNat T.mkTt)
             (T.mkDescRet T.mkTt))
           (V.vDesc V.vLevelZero vUnit));
@@ -1281,7 +1281,7 @@ in {
     "reject-desc-pi-check-bad-f-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkLevelZero T.mkUnit T.mkZero (T.mkDescRet T.mkTt))
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkUnit T.mkRefl T.mkZero (T.mkDescRet T.mkTt))
           (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiFn";
@@ -1291,7 +1291,7 @@ in {
     "reject-desc-pi-check-bad-D-position" = {
       expr =
         let r = runCheck (self.check ctx0
-          (T.mkDescPi T.mkLevelZero T.mkUnit (T.mkLam "_" T.mkUnit T.mkTt) T.mkZero)
+          (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkUnit T.mkRefl (T.mkLam "_" T.mkUnit T.mkTt) T.mkZero)
           (V.vDesc V.vLevelZero vUnit));
         in (builtins.elemAt r.error.children 0).position.tag;
       expected = "DPiBody";
@@ -1497,7 +1497,7 @@ in {
       # interp at i = Σ(s:Nat). Eq Unit tt i (Var 1 = i from inside the Sigma snd).
       # All = Unit (allOnRet collapses to Unit at ret-leaf for I=⊤).
       expr = let
-        D = T.mkAnn (T.mkDescArg T.mkLevelZero T.mkNat (T.mkDescRet T.mkTt))
+        D = T.mkAnn (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkDescRet T.mkTt))
                     (T.mkDesc T.mkLevelZero T.mkUnit);
       in (inferTm ctx0 (T.mkDescInd D
         (T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkNat))

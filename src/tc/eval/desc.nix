@@ -674,33 +674,33 @@ in {
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vLevelZero vNat fLam Dret) X_nat vTt).tag;
+        (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-pi-ret-fst" = {
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vLevelZero vNat fLam Dret) X_nat vTt).fst.tag;
+        (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).fst.tag;
       expected = "VPi";
     };
     "interp-pi-ret-fst-domain" = {
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
       in (self.interpF self.defaultFuel vUnit
-        (vDescPi vLevelZero vNat fLam Dret) X_nat vTt).fst.domain.tag;
+        (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).fst.domain.tag;
       expected = "VNat";
     };
     "interp-arg-ret" = {
       # ⟦arg Nat (λ_.ret tt)⟧(λ_. Nat)(tt) = Σ(s:Nat). Eq Unit tt tt
       expr = (self.interpF self.defaultFuel vUnit
-        (vDescArg vLevelZero vNat (mkClosure [] (term.mkDescRet term.mkTt)))
+        (vDescArg vLevelZero vLevelZero vNat vRefl (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-arg-ret-fst" = {
       expr = (self.interpF self.defaultFuel vUnit
-        (vDescArg vLevelZero vNat (mkClosure [] (term.mkDescRet term.mkTt)))
+        (vDescArg vLevelZero vLevelZero vNat vRefl (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).fst.tag;
       expected = "VNat";
     };
@@ -733,14 +733,14 @@ in {
     };
     "linearProfile-list-shape-length" = {
       expr = let
-        D = val.vDescArg vLevelZero val.vNat
+        D = val.vDescArg vLevelZero vLevelZero val.vNat vRefl
               (mkClosure [] (term.mkDescRec term.mkTt (term.mkDescRet term.mkTt)));
       in builtins.length (self.linearProfileF self.defaultFuel D);
       expected = 1;
     };
     "linearProfile-list-shape-S" = {
       expr = let
-        D = val.vDescArg vLevelZero val.vNat
+        D = val.vDescArg vLevelZero vLevelZero val.vNat vRefl
               (mkClosure [] (term.mkDescRec term.mkTt (term.mkDescRet term.mkTt)));
         profile = self.linearProfileF self.defaultFuel D;
       in (builtins.elemAt profile 0).S.tag;

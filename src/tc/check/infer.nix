@@ -340,7 +340,7 @@ in {
                   };
                 }
                 else
-                  pure { term = T.mkDescArg tm.k sTm tResult.term;
+                  pure { term = T.mkDescArg tm.k tm.l sTm tm.eq tResult.term;
                          type = V.vDesc (vLevelMaxOpt kVal tResult.type.level) tResult.type.I; }));
         in
           if tm.k.tag == "level-zero"
@@ -404,7 +404,7 @@ in {
                   # recovery; non-canonical D INFER directly.
                   let iVal = E.instantiate fTy.closure (V.freshVar ctx.depth);
                   in bindP P.DPiBody (self.checkDescAtAnyLevel ctx tm.D iVal) (dInfo:
-                    pure { term = T.mkDescPi tm.k sTm fResult.term dInfo.term;
+                    pure { term = T.mkDescPi tm.k tm.l sTm tm.eq fResult.term dInfo.term;
                            type = V.vDesc (vLevelMaxOpt kVal dInfo.level) iVal; })));
         in
           if tm.k.tag == "level-zero"
@@ -551,7 +551,7 @@ in {
                         (T.mkPi "ih" (T.mkPi "s" (T.mkVar 1)
                             (T.mkApp pQ3 (T.mkApp (T.mkVar 1) (T.mkVar 0))))
                           (T.mkApp pQ3
-                            (T.mkDescArg kTm3 (T.mkVar 2)
+                            (T.mkDescArg kTm3 kTm3 (T.mkVar 2) T.mkRefl
                               (T.mkApp (T.mkVar 2) (T.mkVar 0)))))));
                     # pe : Π(j:I). Π(D:Desc^L I). P D → P (rec j D)
                     peTy = V.vPi "j" iTyVal (V.mkClosure ctx.env
@@ -564,7 +564,7 @@ in {
                         (T.mkPi "D" (T.mkDesc sLev2 iTy2)
                           (T.mkPi "ih" (T.mkApp pQ3 (T.mkVar 0))
                             (T.mkApp pQ4
-                              (T.mkDescPi kTm4 (T.mkVar 3)
+                              (T.mkDescPi kTm4 kTm4 (T.mkVar 3) T.mkRefl
                                 (T.mkVar 2) (T.mkVar 1)))))));
                       # pq : Π(A:Desc^L I). Π(B:Desc^L I). P A → P B → P (plus A B)
                     pqTy = V.vPi "A" (V.vDesc sTy.level iTyVal) (V.mkClosure ctx.env

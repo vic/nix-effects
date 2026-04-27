@@ -117,12 +117,14 @@ let
   # `mkLevelSuc mkLevelZero` for the common 0/1 cases).
   mkDesc = k: I: { tag = "desc"; inherit k I; };
   mkDescRet = j: { tag = "desc-ret"; inherit j; };
-  # `arg` / `pi` carry a universe level `k` (Level Tm). `S` inhabits
-  # `U(k)`. Callers pass a Level Tm directly; integer literals must
-  # be wrapped explicitly.
-  mkDescArg = k: S: T: { tag = "desc-arg"; inherit k S T; };
+  # `arg` / `pi` carry a description level `k` and a per-summand
+  # level `l`, both Level Tm. `S` inhabits `U(l)`; the bound witness
+  # `eq : Eq Level (max l k) k` proves `l ≤ k`. Callers pass Level
+  # Tms directly; integer literals must be wrapped explicitly. The
+  # homogeneous default is `l = k` with `eq = mkRefl`.
+  mkDescArg = k: l: S: eq: T: { tag = "desc-arg"; inherit k l S eq T; };
   mkDescRec = j: D: { tag = "desc-rec"; inherit j D; };
-  mkDescPi = k: S: f: D: { tag = "desc-pi"; inherit k S f D; };
+  mkDescPi = k: l: S: eq: f: D: { tag = "desc-pi"; inherit k l S eq f D; };
   mkDescPlus = A: B: { tag = "desc-plus"; inherit A B; };
   mkMu = I: D: i: { tag = "mu"; inherit I D i; };
   mkDescCon = D: i: d: { tag = "desc-con"; inherit D i d; };
@@ -350,47 +352,64 @@ in mk {
     };
     "desc-ret-tag" = { expr = (mkDescRet mkTt).tag; expected = "desc-ret"; };
     "desc-ret-j" = { expr = (mkDescRet mkTt).j.tag; expected = "tt"; };
-    "desc-arg-tag" = { expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).tag; expected = "desc-arg"; };
-    "desc-arg-S" = { expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).S.tag; expected = "nat"; };
+    "desc-arg-tag" = { expr = (mkDescArg mkLevelZero mkLevelZero mkNat mkRefl (mkDescRet mkTt)).tag; expected = "desc-arg"; };
+    "desc-arg-S" = { expr = (mkDescArg mkLevelZero mkLevelZero mkNat mkRefl (mkDescRet mkTt)).S.tag; expected = "nat"; };
     "desc-arg-k-zero" = {
-      expr = (mkDescArg mkLevelZero mkNat (mkDescRet mkTt)).k.tag;
+      expr = (mkDescArg mkLevelZero mkLevelZero mkNat mkRefl (mkDescRet mkTt)).k.tag;
       expected = "level-zero";
     };
     "desc-arg-k-suc" = {
-      expr = (mkDescArg (mkLevelSuc mkLevelZero) mkNat (mkDescRet mkTt)).k.tag;
+      expr = (mkDescArg (mkLevelSuc mkLevelZero) (mkLevelSuc mkLevelZero) mkNat mkRefl (mkDescRet mkTt)).k.tag;
       expected = "level-suc";
     };
     "desc-arg-k-max" = {
       expr = (mkDescArg (mkLevelMax mkLevelZero mkLevelZero)
-              mkNat (mkDescRet mkTt)).k.tag;
+              (mkLevelMax mkLevelZero mkLevelZero)
+              mkNat mkRefl (mkDescRet mkTt)).k.tag;
       expected = "level-max";
+    };
+    "desc-arg-l-zero" = {
+      expr = (mkDescArg mkLevelZero mkLevelZero mkNat mkRefl (mkDescRet mkTt)).l.tag;
+      expected = "level-zero";
+    };
+    "desc-arg-eq-refl" = {
+      expr = (mkDescArg mkLevelZero mkLevelZero mkNat mkRefl (mkDescRet mkTt)).eq.tag;
+      expected = "refl";
     };
     "desc-rec-tag" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).tag; expected = "desc-rec"; };
     "desc-rec-j" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).j.tag; expected = "tt"; };
     "desc-rec-D" = { expr = (mkDescRec mkTt (mkDescRet mkTt)).D.tag; expected = "desc-ret"; };
     "desc-pi-tag" = {
-      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).tag;
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).tag;
       expected = "desc-pi";
     };
     "desc-pi-S" = {
-      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).S.tag;
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).S.tag;
       expected = "nat";
     };
     "desc-pi-f" = {
-      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).f.tag;
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).f.tag;
       expected = "lam";
     };
     "desc-pi-D" = {
-      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).D.tag;
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).D.tag;
       expected = "desc-ret";
     };
     "desc-pi-k-zero" = {
-      expr = (mkDescPi mkLevelZero mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
       expected = "level-zero";
     };
     "desc-pi-k-suc" = {
-      expr = (mkDescPi (mkLevelSuc mkLevelZero) mkNat (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
+      expr = (mkDescPi (mkLevelSuc mkLevelZero) (mkLevelSuc mkLevelZero) mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).k.tag;
       expected = "level-suc";
+    };
+    "desc-pi-l-zero" = {
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).l.tag;
+      expected = "level-zero";
+    };
+    "desc-pi-eq-refl" = {
+      expr = (mkDescPi mkLevelZero mkLevelZero mkNat mkRefl (mkLam "_" mkNat mkTt) (mkDescRet mkTt)).eq.tag;
+      expected = "refl";
     };
     "mu-tag" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).tag; expected = "mu"; };
     "mu-I" = { expr = (mkMu mkUnit (mkDescRet mkTt) mkTt).I.tag; expected = "unit"; };

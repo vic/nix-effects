@@ -291,14 +291,20 @@ let
       && conv d v1.I v2.I
     else if t1 == "VDescRet" && t2 == "VDescRet" then conv d v1.j v2.j
     else if t1 == "VDescArg" && t2 == "VDescArg" then
-      # Level-zero fast-path at the new `k` slot: the prelude's
-      # pre-existing `arg S T` sites all carry `k = 0`, so skip the
-      # full `convLevel` pipeline when both sides are the
-      # `VLevelZero` singleton.
+      # Level-zero fast-path at the `k` and `l` slots: the prelude's
+      # pre-existing `arg S T` sites all carry `k = 0` and `l = 0`, so
+      # skip the full `convLevel` pipeline when both sides are the
+      # `VLevelZero` singleton. The `eq` slot is structurally compared
+      # — for the homogeneous-default `vRefl` carried by current
+      # prelude code this is a tag-tag match.
       (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
        then true
        else convLevel v1.k v2.k)
+      && (if v1.l.tag == "VLevelZero" && v2.l.tag == "VLevelZero"
+          then true
+          else convLevel v1.l v2.l)
       && conv d v1.S v2.S
+      && conv d v1.eq v2.eq
       && conv (d + 1) (E.instantiate v1.T (V.freshVar d))
                       (E.instantiate v2.T (V.freshVar d))
     else if t1 == "VDescRec" && t2 == "VDescRec" then
@@ -307,7 +313,11 @@ let
       (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
        then true
        else convLevel v1.k v2.k)
-      && conv d v1.S v2.S && conv d v1.f v2.f && conv d v1.D v2.D
+      && (if v1.l.tag == "VLevelZero" && v2.l.tag == "VLevelZero"
+          then true
+          else convLevel v1.l v2.l)
+      && conv d v1.S v2.S && conv d v1.eq v2.eq
+      && conv d v1.f v2.f && conv d v1.D v2.D
     else if t1 == "VDescPlus" && t2 == "VDescPlus" then
       conv d v1.A v2.A && conv d v1.B v2.B
     else if t1 == "VMu" && t2 == "VMu" then
@@ -812,26 +822,26 @@ in mk {
     };
     "conv-descarg" = {
       expr = conv 0
-        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = true;
     };
     "conv-descarg-diff-S" = {
       expr = conv 0
-        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg V.vLevelZero vUnit (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg V.vLevelZero V.vLevelZero vUnit V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = false;
     };
     "conv-descarg-diff-k" = {
       expr = conv 0
-        (V.vDescArg V.vLevelZero vNat (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) vNat (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = false;
     };
     "conv-descarg-same-k-one" = {
       expr = conv 0
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) (mkClosure [] (T.mkDescRet T.mkTt)));
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
+        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
       expected = true;
     };
     "conv-descrec" = {
@@ -849,8 +859,8 @@ in mk {
     "conv-descpi" = {
       expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
         conv 0
-          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
-          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt));
+          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
+          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt));
       expected = true;
     };
     "conv-descpi-diff-S" = {
@@ -858,22 +868,22 @@ in mk {
         f1 = V.vLam "_" vNat (mkClosure [] T.mkTt);
         f2 = V.vLam "_" vUnit (mkClosure [] T.mkTt);
       in conv 0
-        (V.vDescPi V.vLevelZero vNat f1 (V.vDescRet vTt))
-        (V.vDescPi V.vLevelZero vUnit f2 (V.vDescRet vTt));
+        (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f1 (V.vDescRet vTt))
+        (V.vDescPi V.vLevelZero V.vLevelZero vUnit V.vRefl f2 (V.vDescRet vTt));
       expected = false;
     };
     "conv-descpi-diff-D" = {
       expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
         conv 0
-          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
-          (V.vDescPi V.vLevelZero vNat f (V.vDescRec vTt (V.vDescRet vTt)));
+          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
+          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRec vTt (V.vDescRet vTt)));
       expected = false;
     };
     "conv-descpi-diff-k" = {
       expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
         conv 0
-          (V.vDescPi V.vLevelZero vNat f (V.vDescRet vTt))
-          (V.vDescPi (V.vLevelSuc V.vLevelZero) vNat f (V.vDescRet vTt));
+          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
+          (V.vDescPi (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) vNat V.vRefl f (V.vDescRet vTt));
       expected = false;
     };
     "conv-mu" = {

@@ -94,13 +94,16 @@ let
     else if t == "VDescArg" then
       T.mkDescArg
         (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
+        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
         (quote d v.S)
+        (quote d v.eq)
         (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
     else if t == "VDescRec" then T.mkDescRec (quote d v.j) (quote d v.D)
     else if t == "VDescPi" then
       T.mkDescPi
         (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
-        (quote d v.S) (quote d v.f) (quote d v.D)
+        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
+        (quote d v.S) (quote d v.eq) (quote d v.f) (quote d v.D)
     else if t == "VDescPlus" then T.mkDescPlus (quote d v.A) (quote d v.B)
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
     # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
@@ -368,11 +371,11 @@ in mk {
     "quote-desc" = { expr = (quote 0 (V.vDesc V.vLevelZero V.vUnit)).tag; expected = "desc"; };
     "quote-desc-ret" = { expr = (quote 0 (V.vDescRet V.vTt)).tag; expected = "desc-ret"; };
     "quote-desc-arg" = {
-      expr = (quote 0 (V.vDescArg V.vLevelZero V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
+      expr = (quote 0 (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
       expected = "desc-arg";
     };
     "quote-desc-arg-k-zero-fastpath" = {
-      expr = (quote 0 (V.vDescArg V.vLevelZero V.vNat (V.mkClosure [] (T.mkDescRet T.mkTt)))).k.tag;
+      expr = (quote 0 (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl (V.mkClosure [] (T.mkDescRet T.mkTt)))).k.tag;
       expected = "level-zero";
     };
     "quote-desc-rec" = {
@@ -381,22 +384,22 @@ in mk {
     };
     "quote-desc-pi" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).tag;
       expected = "desc-pi";
     };
     "quote-desc-pi-S" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).S.tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).S.tag;
       expected = "nat";
     };
     "quote-desc-pi-D" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).D.tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).D.tag;
       expected = "desc-ret";
     };
     "quote-desc-pi-k-zero-fastpath" = {
       expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vNat f (V.vDescRet V.vTt))).k.tag;
+        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).k.tag;
       expected = "level-zero";
     };
     "quote-mu" = {
@@ -418,11 +421,11 @@ in mk {
 
     # Roundtrip: eval then quote for desc-pi
     "nf-desc-pi" = {
-      expr = (nf [] (T.mkDescPi T.mkLevelZero T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
+      expr = (nf [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "desc-pi";
     };
     "nf-desc-pi-roundtrip" = {
-      expr = let D = T.mkDescPi T.mkLevelZero T.mkNat (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
+      expr = let D = T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
         nf [] (nf [] D) == nf [] D;
       expected = true;
     };
@@ -546,7 +549,7 @@ in mk {
         tt = V.vTt;
         listDescVal = V.vDescPlus
           (V.vDescRet tt)
-          (V.vDescArg V.vLevelZero V.vNat
+          (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl
             (V.mkClosure [ ] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))));
         leftTy  = V.vEq unit tt tt;
         rightTy = V.vU V.vLevelZero;

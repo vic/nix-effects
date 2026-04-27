@@ -245,12 +245,14 @@ in {
       else if t == "desc-arg" then
         vDescArg
           (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
-          (ev tm.S) (mkClosure env tm.T)
+          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
+          (ev tm.S) (ev tm.eq) (mkClosure env tm.T)
       else if t == "desc-rec" then vDescRec (ev tm.j) (ev tm.D)
       else if t == "desc-pi" then
         vDescPi
           (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
-          (ev tm.S) (ev tm.f) (ev tm.D)
+          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
+          (ev tm.S) (ev tm.eq) (ev tm.f) (ev tm.D)
       else if t == "desc-plus" then vDescPlus (ev tm.A) (ev tm.B)
       else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
       # desc-con — trampolined for deep recursive chains (5000+).
@@ -645,17 +647,17 @@ in {
     "eval-desc" = { expr = (eval [] (T.mkDesc T.mkLevelZero T.mkUnit)).tag; expected = "VDesc"; };
     "eval-desc-ret" = { expr = (eval [] (T.mkDescRet T.mkTt)).tag; expected = "VDescRet"; };
     "eval-desc-arg" = {
-      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).tag;
       expected = "VDescArg";
     };
     "eval-desc-arg-k-zero" = {
-      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
       expected = "VLevelZero";
     };
     "eval-desc-arg-k-one" = {
-      expr = (eval [] (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) T.mkNat
+      expr = (eval [] (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
       expected = "VLevelSuc";
     };
@@ -664,22 +666,22 @@ in {
       expected = "VDescRec";
     };
     "eval-desc-pi" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
       expected = "VDescPi";
     };
     "eval-desc-pi-S" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
       expected = "VNat";
     };
     "eval-desc-pi-D" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
       expected = "VDescRet";
     };
     "eval-desc-pi-k-zero" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkNat
+      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
         (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).k.tag;
       expected = "VLevelZero";
     };
@@ -729,7 +731,7 @@ in {
     "eval-desc-ind-arg-con" = {
       # D = arg Nat (λ_. ret tt), ind D P step tt (con tt (zero, refl)) = 0
       expr = let
-        D = T.mkDescArg T.mkLevelZero T.mkNat
+        D = T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
           (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt));
         P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
         step = T.mkLam "i" T.mkUnit
