@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `desc-arg` / `desc-pi` eq-slot fast-path: when `(l, k) = (0, 0)` and `tm.eq` is syntactically `refl`, emit `mkRefl` directly without recursing through CHECK
 - Bench gate excludes `symbols` / `symbolsBytes` from the alloc max-fold — these track interned-string growth (new tag names, test names, binder names), not workload work. Reported in blame with `codeSize: true` for visibility
 - `queue.append` / `queue.snoc` only allocate the `__rawResume` overlay attrset when the source queue actually carries the flag; common-case `bind` chains pay only an `or false` lookup. Credit: @sini (#19)
+- **Bench baseline recalibrated.** `queue.snoc`'s `__rawResume` preservation (the snoc fix above) adds one attrset lookup per `kernel.bind` on the Impure path. Alternative encodings (`ImpureRaw` comp variant, `//` overlay) pay the same cost in different alloc fields — the discriminator is structurally additive, so the snoc fix's correctness gain (deep handler routing through `bind (provide _ _) k`) costs the recalibration. PR #19's `queue.append` fix is on the per-effect path and not gate-visible. Affected workloads: `bindHeavy.s10k` +23‰, `nestedHandlers.d3_i1k` +11‰, `interp.{fib10,fib15,sum1000,countdown1000}` +6-14‰. Previous baseline preserved at `bench/history/baseline.pre-pr19.json` for future bind-path optimisation
 
 ## [0.10.0] - 2026-04-26
 

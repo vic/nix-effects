@@ -1,8 +1,8 @@
-# Perf budgets generated from calibration run 'calibrate-20260424-103334'.
+# Perf budgets generated from calibration run 'calibrate-20260428-125547'.
 # Runs per workload: 50
 # Nix: 2.31.4
 # System: x86_64-linux
-# Timestamp: 2026-04-24T10:53:32Z
+# Timestamp: 2026-04-28T13:17:40Z
 
 allocTolerancePermille = 5
 
@@ -50,46 +50,46 @@ allocNoiseLimited = [
 ]
 
 [cpu]
-"effects.buildSim.fail_early" = 17
-"effects.buildSim.fail_late" = 15
-"effects.buildSim.fail_mid" = 12
-"effects.buildSim.linear100" = 15
-"effects.buildSim.linear50" = 12
-"effects.buildSim.mixed_small" = 12
-"effects.buildSim.tree5" = 20
-"effects.buildSim.wide100" = 12
-"effects.buildSim.wide50" = 30
-"effects.interp.countdown1000" = 15
-"effects.interp.fib10" = 18
-"effects.interp.fib15" = 33
-"effects.interp.lets100" = 9
-"effects.interp.lets500" = 14
-"effects.interp.sum100" = 14
-"effects.interp.sum1000" = 18
+"effects.buildSim.fail_early" = 33
+"effects.buildSim.fail_late" = 56
+"effects.buildSim.fail_mid" = 23
+"effects.buildSim.linear100" = 18
+"effects.buildSim.linear50" = 18
+"effects.buildSim.mixed_small" = 24
+"effects.buildSim.tree5" = 27
+"effects.buildSim.wide100" = 42
+"effects.buildSim.wide50" = 23
+"effects.interp.countdown1000" = 47
+"effects.interp.fib10" = 21
+"effects.interp.fib15" = 24
+"effects.interp.lets100" = 33
+"effects.interp.lets500" = 26
+"effects.interp.sum100" = 12
+"effects.interp.sum1000" = 14
 "effects.stress.bindHeavy.s10k" = 12
-"effects.stress.deepChains.s10k" = 15
-"effects.stress.effectHeavy.s10k" = 15
+"effects.stress.deepChains.s10k" = 71
+"effects.stress.effectHeavy.s10k" = 51
 "effects.stress.mixed.s10k" = 30
-"effects.stress.nestedHandlers.d3_i1k" = 33
-"tc.bindP.slow-path-chain-5000" = 17
-"tc.check.list-chain-5000" = 12
-"tc.check.macro-field" = 15
+"effects.stress.nestedHandlers.d3_i1k" = 12
+"tc.bindP.slow-path-chain-5000" = 44
+"tc.check.list-chain-5000" = 17
+"tc.check.macro-field" = 14
 "tc.check.nat-chain-5000" = 14
-"tc.conv.alpha-equivalent" = 11
-"tc.conv.beta-distinct" = 11
-"tc.conv.identical-deep" = 15
-"tc.conv.identical-shallow" = 11
-"tc.conv.mu-heavy" = 18
-"tc.conv.plus-heavy" = 15
-"tc.diag.hint-resolve-5000" = 11
-"tc.diag.pretty-multi-line-5000" = 15
-"tc.diag.pretty-one-line-5000" = 20
-"tc.e2e.datatype-macro-big" = 14
-"tc.e2e.datatypeI-fin-deep" = 11
+"tc.conv.alpha-equivalent" = 35
+"tc.conv.beta-distinct" = 84
+"tc.conv.identical-deep" = 47
+"tc.conv.identical-shallow" = 9
+"tc.conv.mu-heavy" = 12
+"tc.conv.plus-heavy" = 8
+"tc.diag.hint-resolve-5000" = 15
+"tc.diag.pretty-multi-line-5000" = 12
+"tc.diag.pretty-one-line-5000" = 14
+"tc.e2e.datatype-macro-big" = 9
+"tc.e2e.datatypeI-fin-deep" = 26
 "tc.e2e.let-chain-100" = 11
-"tc.elaborate.flatten" = 17
-"tc.elaborate.recursive" = 17
-"tc.infer.deep-app-100" = 30
-"tc.quote.closed" = 63
-"tc.quote.open" = 17
-"tc.quote.stuck" = 17
+"tc.elaborate.flatten" = 32
+"tc.elaborate.recursive" = 15
+"tc.infer.deep-app-100" = 26
+"tc.quote.closed" = 32
+"tc.quote.open" = 26
+"tc.quote.stuck" = 26
