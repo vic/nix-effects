@@ -210,6 +210,36 @@ let
           in result.value;
         expected = "inner";
       };
+      # Companion to provide-deep-through-bind-chain: the bind sits AFTER the
+      # rotating provide, so kernel.bind extends the rotation continuation
+      # queue via queue.snoc (instead of resumeCompOrValue's queue.append).
+      # snoc must preserve __rawResume on q1 for deep handler routing.
+      "provide-deep-through-bind-after-rotate" = {
+        expr =
+          let
+            body = send "work" null;
+            result = handle {
+              handlers = {
+                probe = { state, ... }: { resume = "root"; inherit state; };
+                emit = { param, state }: {
+                  resume = send "probe" null;
+                  inherit state;
+                };
+                work = { param, state }: {
+                  # bind AFTER provide — provide returns an impure with a
+                  # __rawResume queue; kernel.bind snocs onto it.
+                  resume = bind
+                    (provide {
+                      probe = { state, ... }: { resume = "inner"; inherit state; };
+                    } (send "emit" null))
+                    (x: pure x);
+                  inherit state;
+                };
+              };
+            } body;
+          in result.value;
+        expected = "inner";
+      };
     };
   };
 

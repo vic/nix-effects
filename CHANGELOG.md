@@ -11,10 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Lift` primitive** — explicit cross-level transport. `Lift l m eq A : U(m)` for `A : U(l)` with bound witness `eq : Eq Level (max l m) m`; introducer `liftAt`, eliminator `lowerAt`. Smart constructor collapses idempotently at `l ≡ m` (`Lift l l _ A ≡ A`, `liftAt l l _ A a ≡ a`, `lowerAt l l _ A x ≡ x`). HOAS surface: `LiftAt` / `liftAt` / `lowerAt`
 - **`natToLevel : Nat → Level`** — structurally reduces on closed Nats (`natToLevel zero ≡ levelZero`, `natToLevel (succ n) ≡ levelSuc (natToLevel n)`); stuck on neutrals. Asymmetric — no `levelToNat` rule
+- **`scope.provide` / `scope.val`** — stateless scoped handlers (reader/val pattern). `scope.provide handlers body` installs `handlers` for `body`'s dynamic extent without touching state; unhandled effects rotate outward and outer state mutations survive unaffected. `scope.val` is a convenience wrapper named after Koka's `val` handler: takes an attrset of constant values and builds handlers via `handlersFromAttrs`. Credit: @sini (#19)
+- **`bind.optionalArg` sentinel** — explicit marker for optional bindAttrs entries. `bindAttrs { x = optionalArg; ... }` probes via `has-handler` and omits `x` from the result when no handler is installed (Nix function defaults can then take over). `bind.comp` / `bind.fn` translate `lib.functionArgs`'s `true` (= has default) into this sentinel internally — the magic-coupling to `lib.functionArgs`'s output shape is now confined to the wrappers, and `bindAttrs`'s "non-comp value → `send name value`" contract is preserved literally for `true`
 
 ### Changed
 
 - **Per-summand level on `descArg` / `descPi`** with bound witness `eq : Eq Level (max l k) k`. The summand sort `S` may live at level `l` ≤ description level `k`; cross-level transport at every introducer / eliminator is via `Lift`
+
+### Fixed
+
+- **Deep handler routing through bind chains around scope rotation.** `queue.append` and `queue.snoc` now preserve the `__rawResume` flag set by `effectRotate` on rotation continuation queues. Without this, `bind` chains wrapping a rotating `scope.provide` / `scope.run` / `scope.runWith` lost the flag mid-chain — the outer interpreter fell back to `resumeCompOrValue` instead of `resumeWithQueue`, so effectful resumes from outer handlers no longer routed through inner-scope handlers. `append` fix credit: @sini (#19); `snoc` fix closes the symmetric path on `kernel.bind`
+- **`queue.append` fix preserved one-sided:** the flag is propagated from `q1` (the rotation continuation queue, which appears on the left at every current call site). `q2.__rawResume` is intentionally not propagated — no current call site produces it on the right
 
 ### Removed
 
@@ -25,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - L=0 fast-paths in `interpF` (eval-side) and `interpHoasAt` (HOAS-side): when the description level is statically zero, emit the post-collapse form directly without `Lift`-wrap or extra closure-env entries. HOAS↔eval conv preserved (same Val under instantiation; smart constructor collapses Lift at equal levels)
 - `desc-arg` / `desc-pi` eq-slot fast-path: when `(l, k) = (0, 0)` and `tm.eq` is syntactically `refl`, emit `mkRefl` directly without recursing through CHECK
 - Bench gate excludes `symbols` / `symbolsBytes` from the alloc max-fold — these track interned-string growth (new tag names, test names, binder names), not workload work. Reported in blame with `codeSize: true` for visibility
+- `queue.append` / `queue.snoc` only allocate the `__rawResume` overlay attrset when the source queue actually carries the flag; common-case `bind` chains pay only an `or false` lookup. Credit: @sini (#19)
 
 ## [0.10.0] - 2026-04-26
 

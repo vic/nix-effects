@@ -59,6 +59,14 @@ let
     doc = "Append a continuation to the right of the queue. O(1).";
     value = q: fn:
       if q._variant == "Identity" then leaf fn
+      # Preserve __rawResume flag through queue extension. Mirrors append:
+      # effectRotate tags rotation continuations with __rawResume so the
+      # outer interpreter routes effectful resumes back through inner
+      # scope handlers. kernel.bind snocs onto the rotation continuation
+      # queue when a bind chain follows a rotating subcomputation; without
+      # this, the flag is lost and deep semantics silently break.
+      else if q.__rawResume or false
+      then (node q (leaf fn)) // { __rawResume = true; }
       else node q (leaf fn);
   };
 

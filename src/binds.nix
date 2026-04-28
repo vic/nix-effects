@@ -12,6 +12,15 @@ let
   inherit (fx.kernel) bind send;
   inherit (api) mk;
 
+  # Sentinel marking an attr as optional in bindAttrs: the value is probed
+  # via has-handler before sending; if no handler exists, the key is omitted
+  # from the resolved attrset (Nix function defaults can then kick in).
+  # bindComp/bindFn translate `lib.functionArgs f`'s `true` (= has default)
+  # into this marker before calling bindAttrs.
+  optionalArg = { __bindAttrsOptional = true; };
+
+  isOptionalMarker = v: builtins.isAttrs v && (v.__bindAttrsOptional or false);
+
   bindAttrs' = attrs:
     let
       skip = n: !builtins.elem n [ "__sort" "__functor" "__functionArgs" ];
@@ -22,7 +31,9 @@ let
         let value = attrs.${name}; in
         if isComp value
         then { inherit name; comp = value; optional = false; }
-        else { inherit name; comp = send name value; optional = value == true; };
+        else if isOptionalMarker value
+        then { inherit name; comp = send name null; optional = true; }
+        else { inherit name; comp = send name value; optional = false; };
     in
     builtins.foldl'
     (prev: curr:
@@ -48,9 +59,9 @@ let
     ```
 
     Values that are non-effects become send params: `send "foo" 99`.
-    Values of `true` (from `lib.functionArgs` optional args) are probed
-    via has-handler first — if no handler exists, the key is omitted
-    from the result so the Nix function's default kicks in.
+    Pass the `optionalArg` sentinel to mark a key as optional: bindAttrs
+    probes via `has-handler` first and omits the key when no handler is
+    installed (so a Nix function's default value can take over).
 
     Result has same attr-keys with corresponding effect result.
 
@@ -104,6 +115,43 @@ let
         in result.state;
         expected = 24;
       };
+      # Plain `true` is a value, not an optionality marker. bindAttrs sends
+      # it as the param: handlers receive the literal true. With no handler,
+      # the effect is unhandled and the trampoline throws — same as any
+      # other required send.
+      true-is-send-param-not-optional = {
+        expr = let
+          eff = bindAttrs { x = true; };
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = param; inherit state; };
+          } null;
+        in result.value.x;
+        expected = true;
+      };
+      true-throws-when-handler-missing = {
+        expr = let
+          eff = bindAttrs { x = true; };
+        in (builtins.tryEval (fx.trampoline.run eff {} null).value).success;
+        expected = false;
+      };
+      # Optionality is requested explicitly via the optionalArg sentinel.
+      # No handler → key is omitted from the result.
+      optionalArg-omitted-when-handler-missing = {
+        expr = let
+          eff = bindAttrs { x = optionalArg; };
+          caught = builtins.tryEval (fx.trampoline.run eff {} null).value;
+        in caught.success && caught.value == {};
+        expected = true;
+      };
+      optionalArg-resolved-when-handler-exists = {
+        expr = let
+          eff = bindAttrs { x = optionalArg; };
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = 42; inherit state; };
+          } null;
+        in result.value.x;
+        expected = 42;
+      };
     };
   };
 
@@ -127,7 +175,16 @@ let
     and attrs.
     '';
     value = attrs: f:
-      bind (bindAttrs ((lib.functionArgs f) // attrs)) f;
+      let
+        # Translate lib.functionArgs's bool output into bindAttrs sentinels:
+        #   true  (has default)  -> optionalArg (probe + skip if no handler)
+        #   false (required)     -> false (sent literally as the param)
+        # User-supplied attrs win via // override.
+        fnArgs = lib.functionArgs f;
+        translated = lib.mapAttrs (_: hasDefault:
+          if hasDefault then optionalArg else false) fnArgs;
+      in
+      bind (bindAttrs (translated // attrs)) f;
     tests = {
       arg-in-attrs = {
         expr = (bindComp { x = pure 22; } ({ x }: pure (x * 2))).value;
@@ -225,6 +282,6 @@ let
 in mk {
   doc = "Idiomatic Nix bind helpers";
   value = {
-    inherit bindAttrs bindComp bindFn;
+    inherit bindAttrs bindComp bindFn optionalArg;
   };
 }
