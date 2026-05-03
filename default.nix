@@ -204,6 +204,7 @@ let
       linear = effects.linear;
       scope = effects.scope;
       hasHandler = effects.hasHandler;
+      tea = effects.tea;
     };
 
     # Streams (effectful lazy sequences)
